@@ -33,11 +33,11 @@ jobs:
           python -m pip install pdm
       - name: Build packages
         run: pdm build
-      - name: Publish distribution to Test PyPI
-        run: |
-          pdm publish --no-build
-        env:
-          PDM_PUBLISH_REPO: 'https://test.pypi.org/legacy/'
+      # - name: Publish distribution to Test PyPI  # <-- Unable to publish to test pypi, as the project name is taken there
+      #   run: |
+      #     pdm publish --no-build
+      #   env:
+      #     PDM_PUBLISH_REPO: 'https://test.pypi.org/legacy/'
       - name: Publish distribution to PRODUCTION PyPI
         run: |
           pdm publish --no-build

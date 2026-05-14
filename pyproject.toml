@@ -1,0 +1,213 @@
+[project]
+# PEP 621 project metadata
+# See https://www.python.org/dev/peps/pep-0621/
+name = "tf-project"
+description = "Custom Terraform project wrapper used to provision infrastructure."
+
+authors = [
+    {name = "Ilja Orlovs", email = "ilja@release.art"},
+]
+maintainers = [
+    {name = "Ilja Orlovs", email = "ilja@release.art"},
+]
+
+dynamic = ["version"]
+
+requires-python = ">=3.11"
+
+license = "MIT"
+
+dependencies = [
+    "typer>=0.21.2",
+]
+
+readme = "README.md"
+
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Systems Administration",
+    "Typing :: Typed",
+]
+
+[project.scripts]
+tf-project = "tf_project.cli:main"
+tfp = "tf_project.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/release-art/tf-project"
+Repository = "https://github.com/release-art/tf-project"
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+# For working with PDM, including configuration and usage see:
+#
+#     https://pdm.fming.dev/latest/
+#     https://pdm.fming.dev/latest/reference/pep621/
+#     https://pdm.fming.dev/latest/reference/cli/
+#
+[tool.pdm]
+distribution = true
+
+[tool.pdm.build]
+package-dir = "src"
+includes = ["src/tf_project", "src/tf_project/py.typed"]
+excludes = [
+    "docs",
+    "build",
+    "dist",
+    "tests",
+    ".pytest_cache",
+    "*.pyc",
+    "*.env",
+    "*__pycache__*",
+]
+source-includes = [
+    "README.md",
+    "CHANGELOG.md",
+]
+editable-backend = "path"
+
+[tool.pdm.version]
+source = "file"
+path = "src/tf_project/__version__.py"
+
+[tool.pdm.scripts]
+tf-project = {call = "tf_project.cli:main"}
+tfp = {call = "tf_project.cli:main"}
+
+[tool.pyright]
+pythonVersion = "3.11"
+venvPath = "."
+venv = ".venv"
+include = ["src/tf_project"]
+typeCheckingMode = "standard"
+reportMissingTypeStubs = false
+
+[tool.ruff]
+target-version = "py311"
+lint.select = [
+    "A",
+    "B",
+    "C",
+    "E",
+    "F",
+    "I",
+    "W",
+    "N",
+    "C4",
+    "T20",
+    "PTH",
+]
+lint.ignore = ["N802", "F841"]
+line-length = 120
+
+[tool.ruff.format]
+line-ending = "lf"
+
+[tool.ruff.lint.per-file-ignores]
+"__init__.py" = [
+    "F401",
+    "E402",
+]
+"bin/**/*.py" = [
+    "T201",
+]
+"src/tf_project/cli.py" = [
+    "B008",  # typer.Option() as default arg
+]
+"src/tf_project/commands.py" = [
+    "T201",  # print() — user-facing CLI output
+]
+"src/tf_project/terraform.py" = [
+    "T201",  # print() — dry-run / verbose / error output to stderr
+]
+
+[tool.ruff.lint.isort]
+order-by-type = true
+combine-as-imports = true
+force-wrap-aliases = true
+known-first-party = ["tf_project"]
+forced-separate = ["tests"]
+
+# For ``pytest`` configuration, including TOML-specific configuration see:
+#
+#     https://docs.pytest.org/en/7.3.x/reference/customize.html#configuration
+#     https://docs.pytest.org/en/7.3.x/reference/customize.html#pyproject-toml
+#
+[tool.pytest.ini_options]
+pythonpath = "src"
+addopts = """\
+    --cache-clear \
+    --code-highlight=yes \
+    --color=yes \
+    --cov=src \
+    --cov-config=pyproject.toml \
+    --cov-report=xml \
+    --cov-report=html \
+    --cov-report=term-missing:skip-covered \
+    -ra \
+    --tb=native \
+    --verbosity=3 \
+    -m "not integration" \
+"""
+filterwarnings = [
+    "ignore::DeprecationWarning"
+]
+python_files = ["test_*.py"]
+python_classes = ["Test", "Acceptance"]
+python_functions = ["test"]
+testpaths = [
+    "tests/",
+]
+markers = [
+    "integration: requires a real `terraform` binary on PATH",
+]
+
+# For ``coverage`` configuration see the reference from version ``7.4.1``:
+#
+#     https://coverage.readthedocs.io/en/7.4.1/config.html
+#
+[tool.coverage.run]
+branch = true
+omit = [
+    "./build",
+    "./dist",
+    "./docs",
+    "*/tests*",
+    ".pytest_cache",
+    "*.pyc",
+    "*.env",
+    "*__pycache__*",
+    "__version__.py",
+]
+source = ["src"]
+
+[tool.coverage.report]
+precision = 3
+show_missing = true
+skip_covered = true
+skip_empty = true
+sort = "Name"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.0.3",
+    "pytest-cov",
+    "pytest-mock>=3.15.1",
+    "coverage[toml]",
+    "ruff>=0.15.13",
+    "pyright>=1.1.409",
+]
+build = [
+    "pip>=23.1.2",
+    "twine",
+]

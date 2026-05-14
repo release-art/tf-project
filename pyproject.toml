@@ -1,0 +1,19 @@
+[project]
+name = "tf-project"
+version = "0.0.0dev0"
+description = "Custom terraform project wrapper used to provision our infra."
+authors = [
+    {name = "Ilja Orlovs", email = "IljaOrlovs@users.noreply.github.com"},
+]
+dependencies = []
+requires-python = ">=3.12,<4"
+readme = "README.md"
+license = {text = "MIT"}
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+
+[tool.pdm]
+distribution = true

@@ -27,6 +27,8 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Build Tools",
@@ -83,7 +85,7 @@ tf-project = {call = "tf_project.cli:main"}
 tfp = {call = "tf_project.cli:main"}
 
 [tool.pyright]
-pythonVersion = "3.13"
+pythonVersion = "3.11"
 venvPath = "."
 venv = ".venv"
 include = ["src/tf_project"]
@@ -91,7 +93,7 @@ typeCheckingMode = "standard"
 reportMissingTypeStubs = false
 
 [tool.ruff]
-target-version = "py313"
+target-version = "py311"
 lint.select = [
     "A",
     "B",

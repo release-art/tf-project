@@ -7,13 +7,14 @@ import os
 import pathlib
 import subprocess
 from collections.abc import Iterable
+from typing import Any
 
 
 class ProjectInfoNotFoundError(RuntimeError):
     """No `# {...}` JSON banner with `header == "terraform"` found in tfvars."""
 
 
-def find_project_info(tfvars: pathlib.Path) -> dict[str, str]:
+def find_project_info(tfvars: pathlib.Path) -> dict[str, Any]:
     with tfvars.open("r") as fin:
         for line in fin:
             if not line.startswith("#"):

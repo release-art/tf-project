@@ -36,26 +36,57 @@ def _extras(extra: Sequence[str] | None) -> list[str]:
     return list(extra) if extra else []
 
 
+def _banner_state_key(banner: dict[str, object], *, tfvars: pathlib.Path, config: Config) -> str:
+    """Resolve the remote-state key, honouring an optional `state_key` banner override."""
+    override = banner.get("state_key")
+    if override is None:
+        return f"{config.state_key_prefix}{tfvars.stem}.tfstate"
+    if not isinstance(override, str) or not override:
+        raise ValueError(f"`state_key` in terraform banner of {tfvars} must be a non-empty string")
+    return override
+
+
+def _banner_env(banner: dict[str, object], *, tfvars: pathlib.Path) -> dict[str, str]:
+    """Validate and return the `env` block from a tfvars banner."""
+    raw = banner.get("env")
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"`env` in terraform banner of {tfvars} must be a JSON object")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ValueError(
+                f"`env` in terraform banner of {tfvars} must map string keys to string values; got {key!r}={value!r}"
+            )
+        out[key] = value
+    return out
+
+
 def do_init(config: Config, *, tfvars: pathlib.Path, extra: Sequence[str] | None = None) -> None:
     tfvars = tfvars.resolve()
     project_info = terraform.find_project_info(tfvars)
     project_name = project_info.get("project")
-    if not project_name:
-        raise ValueError(f"`project` missing in terraform banner of {tfvars}")
+    if not isinstance(project_name, str) or not project_name:
+        raise ValueError(f"`project` missing or invalid in terraform banner of {tfvars}")
     print(f"==== PROJECT: {project_name} ====")
+
+    state_key = _banner_state_key(project_info, tfvars=tfvars, config=config)
+    banner_env = _banner_env(project_info, tfvars=tfvars)
 
     config.tmp_dir.mkdir(parents=True, exist_ok=True)
     old_state = MyState.load(config)
     init_env: dict[str, str] = {}
     if old_state is not None:
         init_env.update(old_state.environ)
+    init_env.update(banner_env)  # banner wins over previously-saved state env
 
     state = MyState(
         tfvars=str(tfvars),
         source_root=str(config.terraform_dir / project_name),
         tfplan_location=str(config.tfplan_file),
         environ=init_env,
-        backend_config={"key": f"{config.state_key_prefix}{tfvars.stem}.tfstate"},
+        backend_config={"key": state_key},
     )
 
     cmd = [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import pathlib
 
 import pytest
@@ -145,3 +146,81 @@ def test_custom_terraform_binary_used(config: Config, run_calls: list[dict[str, 
     cfg = dataclasses.replace(config, terraform_binary="/opt/tofu/bin/tofu")
     commands.do_fmt(cfg)
     assert run_calls[0]["cmd"][0] == "/opt/tofu/bin/tofu"
+
+
+def _write_banner_tfvars(path: pathlib.Path, banner: dict[str, object]) -> None:
+    path.write_text(f'# {json.dumps(banner)}\nfoo = "bar"\n')
+
+
+def test_init_honours_banner_state_key(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _write_banner_tfvars(
+        tfvars,
+        {"header": "terraform", "project": "demo", "state_key": "shared/global.tfstate"},
+    )
+    commands.do_init(config, tfvars=tfvars)
+    state = MyState.load(config)
+    assert state is not None
+    assert state.backend_config == {"key": "shared/global.tfstate"}
+    cmd = run_calls[0]["cmd"]
+    idx = cmd.index("-backend-config")
+    assert cmd[idx + 1] == "key=shared/global.tfstate"
+
+
+def test_init_honours_banner_env(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _write_banner_tfvars(
+        tfvars,
+        {
+            "header": "terraform",
+            "project": "demo",
+            "env": {"ARM_SUBSCRIPTION_ID": "from-banner", "EXTRA": "x"},
+        },
+    )
+    commands.do_init(config, tfvars=tfvars)
+    state = MyState.load(config)
+    assert state is not None
+    assert state.environ == {"ARM_SUBSCRIPTION_ID": "from-banner", "EXTRA": "x"}
+
+
+def test_banner_env_overrides_prior_state_env(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)  # seeds environ={"ARM_SUBSCRIPTION_ID": "abc"}
+    _write_banner_tfvars(
+        tfvars,
+        {"header": "terraform", "project": "demo", "env": {"ARM_SUBSCRIPTION_ID": "new"}},
+    )
+    commands.do_init(config, tfvars=tfvars)
+    state = MyState.load(config)
+    assert state is not None
+    assert state.environ["ARM_SUBSCRIPTION_ID"] == "new"
+
+
+def test_banner_env_extends_prior_state_env(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)  # has ARM_SUBSCRIPTION_ID=abc
+    _write_banner_tfvars(
+        tfvars,
+        {"header": "terraform", "project": "demo", "env": {"NEW_VAR": "y"}},
+    )
+    commands.do_init(config, tfvars=tfvars)
+    state = MyState.load(config)
+    assert state is not None
+    assert state.environ == {"ARM_SUBSCRIPTION_ID": "abc", "NEW_VAR": "y"}
+
+
+def test_banner_invalid_state_key_raises(config: Config, tfvars: pathlib.Path) -> None:
+    _write_banner_tfvars(tfvars, {"header": "terraform", "project": "demo", "state_key": ""})
+    with pytest.raises(ValueError, match="state_key"):
+        commands.do_init(config, tfvars=tfvars)
+
+
+def test_banner_invalid_env_raises(config: Config, tfvars: pathlib.Path) -> None:
+    _write_banner_tfvars(
+        tfvars,
+        {"header": "terraform", "project": "demo", "env": {"OK": 123}},
+    )
+    with pytest.raises(ValueError, match="env"):
+        commands.do_init(config, tfvars=tfvars)

@@ -67,6 +67,18 @@ foo = "bar"
 subdirectory to operate on, and persists a state record so subsequent
 commands take no arguments.
 
+The banner also accepts these optional fields:
+
+| Field       | Purpose                                                                                                                          |
+| ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `state_key` | Full remote-state backend key. Overrides the default `<state_key_prefix><tfvars-stem>.tfstate`. Use to share state across files. |
+| `env`       | JSON object of `string → string` env vars. Merged into the saved state on top of any previously-captured environment.            |
+
+```hcl
+# {"header":"terraform","project":"core","state_key":"shared/core.tfstate","env":{"ARM_SUBSCRIPTION_ID":"…"}}
+foo = "bar"
+```
+
 ## Usage
 
 ```sh

@@ -114,6 +114,49 @@ tfp --dry-run plan -t module.foo
 tfp --verbose apply
 ```
 
+### Recovering from a stuck Azure tfstate lock
+
+When terraform is killed mid-operation (Ctrl-C, OOM, network drop), the
+azurerm backend leaves an infinite blob lease on the tfstate. Subsequent
+runs fail with "state locked".
+
+```sh
+tfp self lock status            # lease + lock metadata (exits 2 if locked)
+tfp self lock break             # break the blob lease (prompts for confirmation; -y to skip)
+tfp force-unlock <LOCK_ID>      # backend-agnostic, via terraform passthrough
+```
+
+`tfp self lock status` reads the lock ID directly from the blob's
+`terraformlockid` metadata (which the azurerm backend writes as
+base64-encoded JSON), so you don't have to provoke a failed terraform run
+to discover it:
+
+```
+locked         = True
+lease_state    = leased
+lease_duration = infinite
+lock_id        = 12345678-90ab-cdef-1234-567890abcdef
+lock_who       = user@host
+lock_operation = OperationTypePlan
+lock_created   = 2026-05-14T12:00:00Z
+
+To release via terraform: tfp force-unlock 12345678-90ab-cdef-1234-567890abcdef
+```
+
+`tfp self lock {status,break}` shells out to `az storage blob` and so
+requires the Azure CLI to be installed and authenticated. It reads the
+storage account / container / blob from the saved init state — so this only
+works after `tfp init` has captured `[tf_project.backend_config]`
+(`storage_account_name`, `container_name`) and the `key`.
+
+Two options once you have the ID:
+
+- **`tfp force-unlock <ID>`** — the polite version: terraform releases the
+  lease *and* deletes the lock metadata. Works for any backend.
+- **`tfp self lock break`** — the blunt version: breaks the blob lease
+  without going through terraform. Useful when terraform itself can't
+  reach the backend or when you don't have the ID.
+
 ### Apply safety
 
 `tfp plan` records a SHA-256 of the decrypted tfvars alongside the saved
@@ -159,6 +202,9 @@ tfp self state show            # pretty-print the saved init state
 tfp self state clear           # delete the saved state file
 tfp self doctor                # sanity-check the environment (PATH, dirs, ...)
 tfp self banner check <tfvars> # validate a tfvars banner; print resolved fields
+tfp self lock status           # show Azure blob-lease state of the remote tfstate
+tfp self lock break            # break the lease after a hard-kill left state locked
+tfp force-unlock <LOCK_ID>     # backend-agnostic, via terraform passthrough
 ```
 
 ## Development

@@ -174,6 +174,13 @@ self_app.add_typer(self_state_app, name="state")
 self_banner_app = typer.Typer(name="banner", help="Inspect tfvars banners.", no_args_is_help=True)
 self_app.add_typer(self_banner_app, name="banner")
 
+self_lock_app = typer.Typer(
+    name="lock",
+    help="Inspect or break the remote-state lock. Azure backend only.",
+    no_args_is_help=True,
+)
+self_app.add_typer(self_lock_app, name="lock")
+
 
 @self_app.command("init", help="Bootstrap a tf_project config in the current directory.")
 def self_init() -> None:
@@ -241,6 +248,47 @@ def self_banner_check(
 ) -> None:
     summary = self_commands.do_self_banner_check(_config(ctx), tfvars=tfvars)
     typer.echo(json.dumps(summary, indent=2, sort_keys=True))
+
+
+@self_lock_app.command("status", help="Show the Azure blob-lease state of the remote tfstate.")
+def self_lock_status(ctx: typer.Context) -> None:
+    try:
+        status = self_commands.do_self_lock_status(_config(ctx))
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"locked         = {status.locked}")
+    typer.echo(f"lease_state    = {status.lease_state}")
+    typer.echo(f"lease_duration = {status.lease_duration or '(n/a)'}")
+    if status.lock_id:
+        typer.echo(f"lock_id        = {status.lock_id}")
+        typer.echo(f"lock_who       = {status.lock_who or '(unknown)'}")
+        typer.echo(f"lock_operation = {status.lock_operation or '(unknown)'}")
+        typer.echo(f"lock_created   = {status.lock_created or '(unknown)'}")
+        typer.echo(f"\nTo release via terraform: tfp force-unlock {status.lock_id}")
+    if status.locked:
+        raise typer.Exit(code=2)
+
+
+@self_lock_app.command(
+    "break",
+    help="Break the Azure blob lease on the remote tfstate. Use after a hard kill that left the state locked.",
+)
+def self_lock_break(
+    ctx: typer.Context,
+    yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
+) -> None:
+    if not yes:
+        typer.confirm(
+            "Break the remote-state lease? This may corrupt state if terraform is still running.",
+            abort=True,
+        )
+    try:
+        self_commands.do_self_lock_break(_config(ctx))
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo("Lease broken.")
 
 
 # ---- Top-level dispatcher -----------------------------------------------------

@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import contextlib
 import dataclasses
 import json
 import pathlib
 import shutil
+import subprocess
 import tomllib
-from typing import Any
+from typing import Any, NamedTuple
 
 from tf_project import banner
 from tf_project.config import (
@@ -223,14 +227,158 @@ def do_self_banner_check(config: Config, *, tfvars: pathlib.Path) -> dict[str, A
     return banner.render_summary(info, tfvars=tfvars.resolve(), config=config)
 
 
+# ---- Azure remote-state lock helpers -------------------------------------------
+
+
+class LockStatus(NamedTuple):
+    locked: bool
+    lease_state: str  # available | leased | expired | breaking | broken | unknown
+    lease_duration: str | None  # "infinite" | "fixed" | None
+    # The following are populated from the blob's `terraformlockid` metadata
+    # (base64-encoded JSON written by the azurerm backend). All `None` if the
+    # metadata is missing or unparseable.
+    lock_id: str | None = None
+    lock_who: str | None = None
+    lock_operation: str | None = None
+    lock_created: str | None = None
+
+
+def _decode_lock_info(value: str | None) -> dict[str, Any] | None:
+    """Decode the terraformlockid blob-metadata value (base64-encoded JSON)."""
+    if not value:
+        return None
+    with contextlib.suppress(binascii.Error, ValueError, json.JSONDecodeError):
+        decoded = base64.b64decode(value.encode("ascii"), validate=True).decode("utf-8")
+        payload = json.loads(decoded)
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _require_state_or_error(config: Config) -> MyState:
+    state = MyState.load(config)
+    if state is None:
+        raise SelfCommandError(f"No state at {config.state_file}. Run `tfp init <tfvars>` first.")
+    return state
+
+
+def _azure_blob_args(state: MyState) -> list[str]:
+    """Build the common `az storage blob` argv tail from the saved init state."""
+    bc = state.backend_config
+    account = bc.get("storage_account_name")
+    container = bc.get("container_name")
+    key = bc.get("key")
+    if not (account and container and key):
+        missing = [
+            name
+            for name, value in (
+                ("storage_account_name", account),
+                ("container_name", container),
+                ("key", key),
+            )
+            if not value
+        ]
+        raise SelfCommandError(
+            f"Azure backend metadata missing from saved state: {', '.join(missing)}. "
+            "Set them under [tf_project.backend_config] (or via banner.backend_config) and re-run `tfp init`."
+        )
+    args = [
+        "--account-name",
+        account,
+        "--container-name",
+        container,
+        "--blob-name",
+        key,
+    ]
+    if rg := bc.get("resource_group_name"):
+        args.extend(["--resource-group", rg])
+    if subscription := state.environ.get("ARM_SUBSCRIPTION_ID"):
+        args.extend(["--subscription", subscription])
+    return args
+
+
+def _run_az(args: list[str], *, capture: bool = True) -> str:
+    """Shell out to `az`, raising SelfCommandError with a clean message on failure."""
+    try:
+        result = subprocess.run(  # noqa: S603,S607 — explicit invocation, args validated by callers
+            ["az", *args],
+            capture_output=capture,
+            text=True,
+            check=True,
+        )
+    except FileNotFoundError as exc:
+        raise SelfCommandError(
+            "`az` (Azure CLI) not found on PATH. "
+            "Install it from https://learn.microsoft.com/cli/azure/install-azure-cli "
+            "or break the lease manually in the Azure portal."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr or "").strip() or f"exit code {exc.returncode}"
+        raise SelfCommandError(f"az failed: {detail}") from exc
+    return result.stdout if capture else ""
+
+
+def do_self_lock_status(config: Config) -> LockStatus:
+    """Query the Azure blob lease + lock metadata for the current tfstate.
+
+    Returns lease info (status / state / duration) plus the terraform lock
+    info (ID / who / operation / created) which the azurerm backend writes
+    to the blob's `terraformlockid` metadata as base64-encoded JSON.
+    """
+    state = _require_state_or_error(config)
+    out = _run_az(
+        [
+            "storage",
+            "blob",
+            "show",
+            *_azure_blob_args(state),
+            "-o",
+            "json",
+        ]
+    )
+    data = json.loads(out or "{}") or {}
+    lease = (data.get("properties") or {}).get("lease") or {}
+    metadata = data.get("metadata") or {}
+    # Metadata keys are case-insensitive in Azure but az preserves whatever
+    # case terraform wrote. Look for the canonical key and a lower-cased one.
+    lock_b64 = metadata.get("terraformlockid") or metadata.get("Terraformlockid")
+    info = _decode_lock_info(lock_b64) or {}
+    return LockStatus(
+        locked=(lease.get("status") == "locked"),
+        lease_state=lease.get("state") or "unknown",
+        lease_duration=lease.get("duration"),
+        lock_id=info.get("ID"),
+        lock_who=info.get("Who"),
+        lock_operation=info.get("Operation"),
+        lock_created=info.get("Created"),
+    )
+
+
+def do_self_lock_break(config: Config) -> None:
+    """Break the Azure blob lease on the current tfstate.
+
+    Does not require the terraform lock ID — operates at the blob-lease level
+    so it succeeds even after a hard kill while terraform was holding the
+    lease.
+    """
+    state = _require_state_or_error(config)
+    _run_az(
+        ["storage", "blob", "lease", "break", *_azure_blob_args(state)],
+        capture=True,
+    )
+
+
 __all__ = [
     "DoctorCheck",
+    "LockStatus",
     "SelfCommandError",
     "do_self_banner_check",
     "do_self_config_path",
     "do_self_config_print",
     "do_self_doctor",
     "do_self_init",
+    "do_self_lock_break",
+    "do_self_lock_status",
     "do_self_state_clear",
     "do_self_state_show",
 ]

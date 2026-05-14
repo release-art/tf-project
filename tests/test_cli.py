@@ -47,6 +47,9 @@ def test_subcommand_help(runner: CliRunner, subcommand: str) -> None:
         "self state clear",
         "self banner",
         "self banner check",
+        "self lock",
+        "self lock status",
+        "self lock break",
     ],
 )
 def test_self_subcommand_help(runner: CliRunner, subcommand: str) -> None:

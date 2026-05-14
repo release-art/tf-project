@@ -35,8 +35,8 @@ classifiers = [
 ]
 
 [project.scripts]
-tf-project = "tf_project.cli:app"
-tfp = "tf_project.cli:app"
+tf-project = "tf_project.cli:main"
+tfp = "tf_project.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/release-art/tf-project"
@@ -78,7 +78,8 @@ source = "file"
 path = "src/tf_project/__version__.py"
 
 [tool.pdm.scripts]
-tf-project = {shell = "python -m tf_project"}
+tf-project = {call = "tf_project.cli:main"}
+tfp = {call = "tf_project.cli:main"}
 
 [tool.pyright]
 pythonVersion = "3.13"

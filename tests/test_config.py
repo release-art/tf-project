@@ -94,6 +94,50 @@ def test_missing_config_raises(tmp_path: pathlib.Path) -> None:
         Config.discover(tmp_path)
 
 
+def test_terraform_binary_defaults_to_which(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr("tf_project.config.shutil.which", lambda name: f"/fake/path/{name}")
+    _write_tf_project_toml(tmp_path, "[tf_project]\nterraform_dir = 'infra'\n")
+    cfg = Config.discover(tmp_path)
+    assert cfg.terraform_binary == "/fake/path/terraform"
+
+
+def test_terraform_binary_defaults_to_name_when_not_on_path(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr("tf_project.config.shutil.which", lambda name: None)
+    _write_tf_project_toml(tmp_path, "[tf_project]\nterraform_dir = 'infra'\n")
+    cfg = Config.discover(tmp_path)
+    assert cfg.terraform_binary == "terraform"
+
+
+def test_terraform_binary_explicit_path_resolved_relative_to_project(tmp_path: pathlib.Path) -> None:
+    (tmp_path / "bin").mkdir()
+    (tmp_path / "bin" / "tf").write_text("#!/bin/sh\n")
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+        terraform_binary = "bin/tf"
+        """,
+    )
+    cfg = Config.discover(tmp_path)
+    assert cfg.terraform_binary == str((tmp_path / "bin" / "tf").resolve())
+
+
+def test_terraform_binary_explicit_bare_name_kept(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+        terraform_binary = "tofu"
+        """,
+    )
+    cfg = Config.discover(tmp_path)
+    assert cfg.terraform_binary == "tofu"
+
+
 def test_bad_secrets_command_raises(tmp_path: pathlib.Path) -> None:
     _write_tf_project_toml(
         tmp_path,

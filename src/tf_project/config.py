@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import pathlib
+import shutil
 import tomllib
 from typing import Any
 
@@ -17,6 +18,7 @@ DEFAULT_TFPLAN_NAME = "my.tfplan"
 DEFAULT_TERRAFORM_DIR = "terraform"
 DEFAULT_TFVARS_DIR = "tfvars"
 DEFAULT_TMP_DIR = "tmp"
+DEFAULT_TERRAFORM_BINARY = "terraform"
 
 DEFAULT_SECRETS_COMMAND: tuple[str, ...] = (
     "op",
@@ -50,6 +52,7 @@ class Config:
     state_key_prefix: str
     state_file: pathlib.Path
     tfplan_file: pathlib.Path
+    terraform_binary: str
     secrets: SecretsConfig
 
     @classmethod
@@ -133,8 +136,31 @@ class Config:
             state_key_prefix=state_key_prefix,
             state_file=tmp_dir / state_file_name,
             tfplan_file=tmp_dir / tfplan_name,
+            terraform_binary=_resolve_terraform_binary(raw.get("terraform_binary"), project_root=project_root),
             secrets=SecretsConfig(command=tuple(command_raw)),
         )
+
+
+def _resolve_terraform_binary(value: Any, *, project_root: pathlib.Path) -> str:
+    """Decide which terraform binary to invoke.
+
+    - Unset → `shutil.which("terraform")` if available, else fall back to the
+      bare name so the eventual subprocess call surfaces a clear error.
+    - Value containing a path separator → resolved relative to the project
+      root if not already absolute.
+    - Bare name (e.g. `"tofu"`) → kept as-is so subprocess does its own PATH
+      lookup at exec time.
+    """
+    if value is None:
+        return shutil.which(DEFAULT_TERRAFORM_BINARY) or DEFAULT_TERRAFORM_BINARY
+    if not isinstance(value, str) or not value:
+        raise ConfigError("`terraform_binary` must be a non-empty string")
+    if "/" in value or "\\" in value:
+        p = pathlib.Path(value)
+        if not p.is_absolute():
+            p = (project_root / p).resolve()
+        return str(p)
+    return value
 
 
 def _walk(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any] | None:

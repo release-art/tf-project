@@ -31,6 +31,7 @@ def config(project_tree: pathlib.Path) -> Config:
         state_key_prefix="terraform/azure/",
         state_file=(root / "tmp" / "my_terraform_state.json").resolve(),
         tfplan_file=(root / "tmp" / "my.tfplan").resolve(),
+        terraform_binary="terraform",
         secrets=SecretsConfig(command=()),  # noop — don't shell out to `op` in tests
     )
 

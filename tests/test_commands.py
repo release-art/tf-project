@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import pathlib
 
 import pytest
@@ -38,7 +39,7 @@ def test_init_builds_command_and_persists_state(
     commands.do_init(config, tfvars=tfvars)
     assert len(run_calls) == 1
     cmd = run_calls[0]["cmd"]
-    assert cmd[0] == "terraform"
+    assert cmd[0] == config.terraform_binary
     assert f"-chdir={config.terraform_dir / 'demo'}" in cmd
     assert "init" in cmd
     assert "-upgrade" in cmd
@@ -110,3 +111,37 @@ def test_state_mv(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str
     commands.do_state_mv(config, source="a.b", destination="c.d")
     cmd = run_calls[0]["cmd"]
     assert cmd[-4:] == ["state", "mv", "a.b", "c.d"]
+
+
+def test_plan_extra_args_forwarded(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_plan(config, extra=["-detailed-exitcode", "-compact-warnings"])
+    cmd = run_calls[0]["cmd"]
+    assert "-detailed-exitcode" in cmd
+    assert "-compact-warnings" in cmd
+    # extras should land before -out= so terraform parses them as plan flags
+    assert cmd.index("-detailed-exitcode") < next(i for i, a in enumerate(cmd) if a.startswith("-out="))
+
+
+def test_passthrough_with_state(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_passthrough(config, ["validate", "-json"])
+    cmd = run_calls[0]["cmd"]
+    env = run_calls[0]["env"]
+    assert cmd[0] == "terraform"
+    assert f"-chdir={config.terraform_dir / 'demo'}" in cmd
+    assert cmd[-2:] == ["validate", "-json"]
+    assert isinstance(env, dict) and env["ARM_SUBSCRIPTION_ID"] == "abc"
+
+
+def test_passthrough_without_state(config: Config, run_calls: list[dict[str, object]]) -> None:
+    commands.do_passthrough(config, ["version"])
+    cmd = run_calls[0]["cmd"]
+    assert cmd == ["terraform", "version"]
+    assert run_calls[0]["env"] is None
+
+
+def test_custom_terraform_binary_used(config: Config, run_calls: list[dict[str, object]]) -> None:
+    cfg = dataclasses.replace(config, terraform_binary="/opt/tofu/bin/tofu")
+    commands.do_fmt(cfg)
+    assert run_calls[0]["cmd"][0] == "/opt/tofu/bin/tofu"

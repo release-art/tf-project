@@ -1,4 +1,4 @@
-from tf_project.cli import app
+from tf_project.cli import main
 
 if __name__ == "__main__":
-    app()
+    main()

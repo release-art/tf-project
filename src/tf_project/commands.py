@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import json
 import pathlib
 from collections.abc import Sequence
 
-from tf_project import terraform
+from tf_project import banner, terraform
 from tf_project.config import Config
 from tf_project.secrets import SecretsProvider, provider_from_config
 from tf_project.state import MyState
@@ -13,12 +16,18 @@ from tf_project.state import MyState
 # Subcommands implemented natively below; everything else falls through to
 # `terraform` directly via `do_passthrough`.
 WRAPPED_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv"}
+    {"init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status"}
 )
+
+TFPLAN_META_SUFFIX = ".meta.json"
 
 
 class StateNotInitializedError(RuntimeError):
     """Raised when a command needs a saved state but `init` hasn't been run."""
+
+
+class StaleTfplanError(RuntimeError):
+    """The saved tfplan was generated against a different tfvars content."""
 
 
 def _require_state(config: Config) -> MyState:
@@ -36,43 +45,41 @@ def _extras(extra: Sequence[str] | None) -> list[str]:
     return list(extra) if extra else []
 
 
-def _banner_state_key(banner: dict[str, object], *, tfvars: pathlib.Path, config: Config) -> str:
-    """Resolve the remote-state key, honouring an optional `state_key` banner override."""
-    override = banner.get("state_key")
-    if override is None:
-        return f"{config.state_key_prefix}{tfvars.stem}.tfstate"
-    if not isinstance(override, str) or not override:
-        raise ValueError(f"`state_key` in terraform banner of {tfvars} must be a non-empty string")
-    return override
+def _tfvars_sha256(path: pathlib.Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _banner_env(banner: dict[str, object], *, tfvars: pathlib.Path) -> dict[str, str]:
-    """Validate and return the `env` block from a tfvars banner."""
-    raw = banner.get("env")
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        raise ValueError(f"`env` in terraform banner of {tfvars} must be a JSON object")
-    out: dict[str, str] = {}
-    for key, value in raw.items():
-        if not isinstance(key, str) or not isinstance(value, str):
-            raise ValueError(
-                f"`env` in terraform banner of {tfvars} must map string keys to string values; got {key!r}={value!r}"
-            )
-        out[key] = value
-    return out
+def _tfplan_meta_path(state: MyState) -> pathlib.Path:
+    return pathlib.Path(state.tfplan_location + TFPLAN_META_SUFFIX)
+
+
+def _write_tfplan_meta(state: MyState, *, decrypted: pathlib.Path) -> None:
+    meta = {"tfvars_sha256": _tfvars_sha256(decrypted)}
+    _tfplan_meta_path(state).write_text(json.dumps(meta, sort_keys=True))
+
+
+def _check_tfplan_fresh(state: MyState, *, decrypted: pathlib.Path) -> None:
+    meta_path = _tfplan_meta_path(state)
+    if not meta_path.exists():
+        return
+    expected = json.loads(meta_path.read_text()).get("tfvars_sha256")
+    actual = _tfvars_sha256(decrypted)
+    if expected and expected != actual:
+        raise StaleTfplanError(
+            f"Saved tfplan at {state.tfplan_location} was generated against a different "
+            f"tfvars content (sha256 {expected[:12]}…) than the current one "
+            f"(sha256 {actual[:12]}…). Re-run `tfp plan` or use `tfp apply --force`."
+        )
 
 
 def do_init(config: Config, *, tfvars: pathlib.Path, extra: Sequence[str] | None = None) -> None:
     tfvars = tfvars.resolve()
-    project_info = terraform.find_project_info(tfvars)
-    project_name = project_info.get("project")
-    if not isinstance(project_name, str) or not project_name:
-        raise ValueError(f"`project` missing or invalid in terraform banner of {tfvars}")
+    project_info = banner.find_project_info(tfvars)
+    project_name = banner.parse_project(project_info, tfvars=tfvars)
     print(f"==== PROJECT: {project_name} ====")
 
-    state_key = _banner_state_key(project_info, tfvars=tfvars, config=config)
-    banner_env = _banner_env(project_info, tfvars=tfvars)
+    backend_config = banner.resolve_backend_config(project_info, tfvars=tfvars, config=config)
+    banner_env = banner.parse_env(project_info, tfvars=tfvars)
 
     config.tmp_dir.mkdir(parents=True, exist_ok=True)
     old_state = MyState.load(config)
@@ -86,7 +93,7 @@ def do_init(config: Config, *, tfvars: pathlib.Path, extra: Sequence[str] | None
         source_root=str(config.terraform_dir / project_name),
         tfplan_location=str(config.tfplan_file),
         environ=init_env,
-        backend_config={"key": state_key},
+        backend_config=backend_config,
     )
 
     cmd = [
@@ -125,11 +132,14 @@ def do_plan(
             ],
             env=terraform.merged_env(state.environ),
         )
+        _write_tfplan_meta(state, decrypted=decrypted)
 
 
-def do_apply(config: Config, *, extra: Sequence[str] | None = None) -> None:
+def do_apply(config: Config, *, force: bool = False, extra: Sequence[str] | None = None) -> None:
     state = _require_state(config)
     with state.decrypted_tfvars(_provider(config)) as decrypted:
+        if not force:
+            _check_tfplan_fresh(state, decrypted=decrypted)
         terraform.run(
             [
                 config.terraform_binary,
@@ -142,6 +152,7 @@ def do_apply(config: Config, *, extra: Sequence[str] | None = None) -> None:
             env=terraform.merged_env(state.environ),
         )
     pathlib.Path(state.tfplan_location).unlink(missing_ok=True)
+    _tfplan_meta_path(state).unlink(missing_ok=True)
 
 
 def do_refresh(
@@ -233,11 +244,47 @@ def do_state_mv(
 
 
 def do_passthrough(config: Config, args: Sequence[str]) -> None:
-    """Forward an arbitrary terraform invocation, preserving `-chdir` and env from state."""
+    """Forward an arbitrary terraform invocation by replacing this process.
+
+    Uses `os.execvpe` so signals and exit code are fully native — no Python
+    in the loop. Returns only in dry-run mode (or in tests, where
+    `exec_passthrough` is mocked).
+    """
     state = MyState.load(config)
     cmd: list[str] = [config.terraform_binary]
     if state is not None:
         cmd.append(f"-chdir={state.source_root}")
     cmd.extend(args)
     env = terraform.merged_env(state.environ) if state is not None else None
-    terraform.run(cmd, env=env)
+    terraform.exec_passthrough(cmd, env=env)
+
+
+@dataclasses.dataclass(frozen=True, slots=True)
+class StatusReport:
+    initialized: bool
+    tfvars: str | None
+    source_root: str | None
+    backend_key: str | None
+    env_keys: tuple[str, ...]
+    plan_ready: bool
+
+
+def status_report(config: Config) -> StatusReport:
+    state = MyState.load(config)
+    if state is None:
+        return StatusReport(
+            initialized=False,
+            tfvars=None,
+            source_root=None,
+            backend_key=None,
+            env_keys=(),
+            plan_ready=False,
+        )
+    return StatusReport(
+        initialized=True,
+        tfvars=state.tfvars,
+        source_root=state.source_root,
+        backend_key=state.backend_config.get("key"),
+        env_keys=tuple(sorted(state.environ)),
+        plan_ready=pathlib.Path(state.tfplan_location).exists(),
+    )

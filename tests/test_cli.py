@@ -27,7 +27,7 @@ def test_version_flag(runner: CliRunner) -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "self"],
+    ["init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "self"],
 )
 def test_subcommand_help(runner: CliRunner, subcommand: str) -> None:
     result = runner.invoke(app, [subcommand, "--help"])
@@ -45,6 +45,8 @@ def test_subcommand_help(runner: CliRunner, subcommand: str) -> None:
         "self state",
         "self state show",
         "self state clear",
+        "self banner",
+        "self banner check",
     ],
 )
 def test_self_subcommand_help(runner: CliRunner, subcommand: str) -> None:
@@ -85,6 +87,8 @@ def test_cli_dispatches_init(
         (["init", "foo.tfvars"], False, []),
         (["--version"], False, []),
         (["--help"], False, []),
+        (["status"], False, []),
+        (["self", "doctor"], False, []),
         (["validate"], True, ["validate"]),
         (["validate", "-json"], True, ["validate", "-json"]),
         (["workspace", "list"], True, ["workspace", "list"]),
@@ -95,3 +99,23 @@ def test_split_passthrough(argv: list[str], expected_passthrough: bool, expected
     is_passthrough, forwarded = _split_passthrough(argv)
     assert is_passthrough is expected_passthrough
     assert forwarded == expected_args
+
+
+@pytest.mark.parametrize(
+    ("argv", "want_args", "want_verbose", "want_dry_run"),
+    [
+        (["plan"], ["plan"], False, False),
+        (["--verbose", "plan"], ["plan"], True, False),
+        (["--dry-run", "plan"], ["plan"], False, True),
+        (["--verbose", "--dry-run", "plan"], ["plan"], True, True),
+        (["plan", "--", "--verbose"], ["plan", "--", "--verbose"], False, False),
+        (["plan", "--verbose"], ["plan"], True, False),
+    ],
+)
+def test_strip_global_flags(argv: list[str], want_args: list[str], want_verbose: bool, want_dry_run: bool) -> None:
+    from tf_project.cli import _strip_global_flags
+
+    args, verbose, dry_run = _strip_global_flags(argv)
+    assert args == want_args
+    assert verbose is want_verbose
+    assert dry_run is want_dry_run

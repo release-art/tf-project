@@ -32,6 +32,7 @@ def config(project_tree: pathlib.Path) -> Config:
         state_file=(root / "tmp" / "my_terraform_state.json").resolve(),
         tfplan_file=(root / "tmp" / "my.tfplan").resolve(),
         terraform_binary="terraform",
+        backend_config={},
         secrets=SecretsConfig(command=()),  # noop — don't shell out to `op` in tests
     )
 

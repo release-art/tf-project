@@ -19,6 +19,7 @@ def run_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
         calls.append({"cmd": cmd, "env": env})
 
     monkeypatch.setattr("tf_project.commands.terraform.run", fake_run)
+    monkeypatch.setattr("tf_project.commands.terraform.exec_passthrough", fake_run)
     return calls
 
 
@@ -224,3 +225,96 @@ def test_banner_invalid_env_raises(config: Config, tfvars: pathlib.Path) -> None
     )
     with pytest.raises(ValueError, match="env"):
         commands.do_init(config, tfvars=tfvars)
+
+
+def test_plan_writes_tfplan_meta(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_plan(config)
+    meta = pathlib.Path(config.tfplan_file.as_posix() + commands.TFPLAN_META_SUFFIX)
+    assert meta.exists()
+    payload = json.loads(meta.read_text())
+    assert "tfvars_sha256" in payload
+
+
+def test_apply_rejects_stale_tfplan(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _save_state(config, tfvars=tfvars)
+    config.tfplan_file.write_bytes(b"plan")
+    # Write a meta file claiming the tfplan was generated against different content.
+    meta = pathlib.Path(config.tfplan_file.as_posix() + commands.TFPLAN_META_SUFFIX)
+    meta.write_text(json.dumps({"tfvars_sha256": "deadbeef" * 8}))
+    with pytest.raises(commands.StaleTfplanError):
+        commands.do_apply(config)
+    # File still present — not consumed.
+    assert config.tfplan_file.exists()
+
+
+def test_apply_force_bypasses_stale_guard(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)
+    config.tfplan_file.write_bytes(b"plan")
+    meta = pathlib.Path(config.tfplan_file.as_posix() + commands.TFPLAN_META_SUFFIX)
+    meta.write_text(json.dumps({"tfvars_sha256": "wrong"}))
+    commands.do_apply(config, force=True)
+    assert not config.tfplan_file.exists()
+    assert not meta.exists()
+
+
+def test_apply_consumes_fresh_tfplan_meta(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_plan(config)  # writes meta
+    config.tfplan_file.write_bytes(b"plan")  # simulate terraform writing the tfplan
+    commands.do_apply(config)  # should not raise — meta matches current tfvars
+    assert not config.tfplan_file.exists()
+    assert not pathlib.Path(config.tfplan_file.as_posix() + commands.TFPLAN_META_SUFFIX).exists()
+
+
+def test_status_report_uninitialized(config: Config) -> None:
+    report = commands.status_report(config)
+    assert report.initialized is False
+
+
+def test_status_report_after_init(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _save_state(config, tfvars=tfvars)
+    report = commands.status_report(config)
+    assert report.initialized is True
+    assert report.tfvars == str(tfvars)
+    assert report.backend_key == "terraform/azure/dev.tfstate"
+    assert "ARM_SUBSCRIPTION_ID" in report.env_keys
+    assert report.plan_ready is False
+    config.tfplan_file.write_bytes(b"plan")
+    assert commands.status_report(config).plan_ready is True
+
+
+def test_init_passes_backend_config_table(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    cfg = dataclasses.replace(
+        config,
+        backend_config={"resource_group_name": "rg", "storage_account_name": "sa"},
+    )
+    commands.do_init(cfg, tfvars=tfvars)
+    cmd = run_calls[0]["cmd"]
+    assert isinstance(cmd, list)
+    flat = " ".join(cmd)
+    assert "-backend-config resource_group_name=rg" in flat
+    assert "-backend-config storage_account_name=sa" in flat
+
+
+def test_passthrough_uses_exec(monkeypatch: pytest.MonkeyPatch, config: Config) -> None:
+    """do_passthrough must invoke terraform.exec_passthrough, not terraform.run."""
+    exec_calls: list[list[str]] = []
+    run_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "tf_project.commands.terraform.exec_passthrough",
+        lambda cmd, env=None: exec_calls.append(cmd),
+    )
+    monkeypatch.setattr(
+        "tf_project.commands.terraform.run",
+        lambda cmd, env=None: run_calls.append(cmd),
+    )
+    commands.do_passthrough(config, ["version"])
+    assert exec_calls and exec_calls[0] == [config.terraform_binary, "version"]
+    assert run_calls == []

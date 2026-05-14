@@ -47,6 +47,13 @@ state_key_prefix = "terraform/azure/"     # remote backend key prefix
 # a bare name (e.g. `"tofu"`) is left for `subprocess` to PATH-resolve.
 # terraform_binary = "bin/terraform-1.7.5"
 
+# Optional. Static `-backend-config` k/v pairs applied to every `tfp init`.
+# Banner-level `backend_config` overrides individual keys.
+[tf_project.backend_config]
+# resource_group_name  = "tfstate-rg"
+# storage_account_name = "tfstate0001"
+# container_name       = "tfstate"
+
 # Optional. Defaults to `op inject`. Set `command = []` to disable.
 [tf_project.secrets]
 command = ["op", "inject", "--in-file", "{in}", "--out-file", "{out}"]
@@ -69,10 +76,11 @@ commands take no arguments.
 
 The banner also accepts these optional fields:
 
-| Field       | Purpose                                                                                                                          |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| `state_key` | Full remote-state backend key. Overrides the default `<state_key_prefix><tfvars-stem>.tfstate`. Use to share state across files. |
-| `env`       | JSON object of `string → string` env vars. Merged into the saved state on top of any previously-captured environment.            |
+| Field            | Purpose                                                                                                                          |
+| ---------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `state_key`      | Full remote-state backend key. Overrides the default `<state_key_prefix><tfvars-stem>.tfstate`. Use to share state across files. |
+| `env`            | JSON object of `string → string` env vars. Merged into the saved state on top of any previously-captured environment.            |
+| `backend_config` | JSON object of extra `-backend-config k=v` pairs (e.g. `resource_group_name`, `storage_account_name`). Wins over the config-level `[tf_project.backend_config]` table. |
 
 ```hcl
 # {"header":"terraform","project":"core","state_key":"shared/core.tfstate","env":{"ARM_SUBSCRIPTION_ID":"…"}}
@@ -92,7 +100,25 @@ tfp destroy -t module.foo.bar   # targeted destroy
 tfp fmt                         # terraform fmt -recursive over terraform/ + tfvars/
 tfp output                      # terraform output -json
 tfp state-mv aws_x.a aws_x.b    # terraform state mv
+tfp status                      # one-line summary of the current init
 ```
+
+### Global flags
+
+- `--verbose` — echo the terraform argv to stderr before exec.
+- `--dry-run` — print the argv and skip execution. Combine with any subcommand
+  (wrapped or passthrough) to preview what would be invoked.
+
+```sh
+tfp --dry-run plan -t module.foo
+tfp --verbose apply
+```
+
+### Apply safety
+
+`tfp plan` records a SHA-256 of the decrypted tfvars alongside the saved
+tfplan (`<tfplan>.meta.json`). `tfp apply` refuses to run if the tfvars
+content changed since the plan was generated. Pass `--force` to override.
 
 ### Passthrough to `terraform`
 
@@ -132,6 +158,7 @@ tfp self config path           # show which file the config came from
 tfp self state show            # pretty-print the saved init state
 tfp self state clear           # delete the saved state file
 tfp self doctor                # sanity-check the environment (PATH, dirs, ...)
+tfp self banner check <tfvars> # validate a tfvars banner; print resolved fields
 ```
 
 ## Development

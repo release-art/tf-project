@@ -39,6 +39,14 @@ def test_decrypted_tfvars_noop(config: Config, tfvars: pathlib.Path) -> None:
         assert p == tfvars
 
 
+def test_save_creates_lock_file(config: Config, tfvars: pathlib.Path) -> None:
+    state = _make_state(tfvars)
+    state.save(config)
+    lock_path = config.state_file.with_suffix(config.state_file.suffix + ".lock")
+    # The lock file is created lazily by `open("a+")` during save.
+    assert lock_path.exists()
+
+
 def test_decrypted_tfvars_cleanup_on_exception(
     config: Config,
     tfvars: pathlib.Path,

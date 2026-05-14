@@ -53,6 +53,7 @@ class Config:
     state_file: pathlib.Path
     tfplan_file: pathlib.Path
     terraform_binary: str
+    backend_config: dict[str, str]
     secrets: SecretsConfig
 
     @classmethod
@@ -128,6 +129,8 @@ class Config:
         if not isinstance(command_raw, list) or not all(isinstance(x, str) for x in command_raw):
             raise ConfigError("[tf_project.secrets].command must be a list of strings")
 
+        backend_config = _parse_backend_config_table(raw.get("backend_config", {}))
+
         return cls(
             project_root=project_root.resolve(),
             terraform_dir=_path("terraform_dir", DEFAULT_TERRAFORM_DIR),
@@ -137,8 +140,22 @@ class Config:
             state_file=tmp_dir / state_file_name,
             tfplan_file=tmp_dir / tfplan_name,
             terraform_binary=_resolve_terraform_binary(raw.get("terraform_binary"), project_root=project_root),
+            backend_config=backend_config,
             secrets=SecretsConfig(command=tuple(command_raw)),
         )
+
+
+def _parse_backend_config_table(raw: Any) -> dict[str, str]:
+    if not isinstance(raw, dict):
+        raise ConfigError("[tf_project.backend_config] must be a table")
+    out: dict[str, str] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            raise ConfigError(
+                f"[tf_project.backend_config] must map string keys to string values; got {key!r}={value!r}"
+            )
+        out[key] = value
+    return out
 
 
 def _resolve_terraform_binary(value: Any, *, project_root: pathlib.Path) -> str:

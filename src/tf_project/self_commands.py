@@ -9,6 +9,7 @@ import shutil
 import tomllib
 from typing import Any
 
+from tf_project import banner
 from tf_project.config import (
     CONFIG_FILE_NAME,
     CONFIG_TABLE,
@@ -211,13 +212,21 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
         "state_file": str(config.state_file),
         "tfplan_file": str(config.tfplan_file),
         "terraform_binary": config.terraform_binary,
+        "backend_config": dict(config.backend_config),
         "secrets": {"command": list(config.secrets.command)},
     }
+
+
+def do_self_banner_check(config: Config, *, tfvars: pathlib.Path) -> dict[str, Any]:
+    """Parse and validate the banner in `tfvars`; return the resolved summary."""
+    info = banner.find_project_info(tfvars.resolve())
+    return banner.render_summary(info, tfvars=tfvars.resolve(), config=config)
 
 
 __all__ = [
     "DoctorCheck",
     "SelfCommandError",
+    "do_self_banner_check",
     "do_self_config_path",
     "do_self_config_print",
     "do_self_doctor",

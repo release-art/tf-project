@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
+import json
 import pathlib
 import sys
 from typing import Annotated
 
 import typer
 
-from tf_project import commands, self_commands
+from tf_project import banner, commands, self_commands, terraform
 from tf_project.__version__ import __version__
 from tf_project.commands import WRAPPED_SUBCOMMANDS
-from tf_project.config import Config
+from tf_project.config import Config, ConfigError
 
-# Top-level group names we own; anything else falls through to terraform.
 SELF_SUBCOMMAND = "self"
+GLOBAL_FLAGS = {"--verbose", "--dry-run"}
 
-# Subcommand context settings: let terraform-style flags (`-foo=bar`) flow
-# through unparsed so users can mix our convenience options with raw
-# terraform CLI flags on the same line.
 PASSTHROUGH_CTX = {
     "allow_extra_args": True,
     "ignore_unknown_options": True,
@@ -26,9 +24,12 @@ PASSTHROUGH_CTX = {
 
 app = typer.Typer(
     name="tf-project",
-    help="Custom Terraform project wrapper. Unknown subcommands are forwarded to `terraform` verbatim.",
+    help=(
+        "Custom Terraform project wrapper. Unknown subcommands are forwarded "
+        "to `terraform` verbatim. Global flags: --verbose (echo terraform "
+        "argv to stderr), --dry-run (print argv and skip execution)."
+    ),
     no_args_is_help=True,
-    add_completion=False,
 )
 
 
@@ -96,8 +97,11 @@ def plan(
 
 
 @app.command("apply", context_settings=PASSTHROUGH_CTX, help="Apply the saved tfplan.")
-def apply(ctx: typer.Context) -> None:
-    commands.do_apply(_config(ctx), extra=ctx.args)
+def apply(
+    ctx: typer.Context,
+    force: Annotated[bool, typer.Option("--force", help="Apply even if the tfvars changed since the plan.")] = False,
+) -> None:
+    commands.do_apply(_config(ctx), force=force, extra=ctx.args)
 
 
 @app.command(
@@ -143,6 +147,21 @@ def state_mv(
     commands.do_state_mv(_config(ctx), source=source, destination=destination, extra=ctx.args)
 
 
+@app.command("status", help="Print a one-line summary of the current init state.")
+def status(ctx: typer.Context) -> None:
+    report = commands.status_report(_config(ctx))
+    if not report.initialized:
+        typer.echo("Not initialized. Run `tfp init <tfvars>` first.", err=True)
+        raise typer.Exit(code=1)
+    typer.echo(f"tfvars      = {report.tfvars}")
+    typer.echo(f"source_root = {report.source_root}")
+    typer.echo(f"backend_key = {report.backend_key or '(none)'}")
+    typer.echo(f"env keys    = {', '.join(report.env_keys) or '(none)'}")
+    typer.echo(f"plan        = {'ready' if report.plan_ready else 'absent'}")
+
+
+# ---- `self` subcommand group --------------------------------------------------
+
 self_app = typer.Typer(name="self", help="Manage tf_project itself.", no_args_is_help=True)
 app.add_typer(self_app, name="self")
 
@@ -151,6 +170,9 @@ self_app.add_typer(self_config_app, name="config")
 
 self_state_app = typer.Typer(name="state", help="Inspect or reset the saved init state.", no_args_is_help=True)
 self_app.add_typer(self_state_app, name="state")
+
+self_banner_app = typer.Typer(name="banner", help="Inspect tfvars banners.", no_args_is_help=True)
+self_app.add_typer(self_banner_app, name="banner")
 
 
 @self_app.command("init", help="Bootstrap a tf_project config in the current directory.")
@@ -209,12 +231,44 @@ def self_doctor(ctx: typer.Context) -> None:
         raise typer.Exit(code=1)
 
 
-def _split_passthrough(argv: list[str]) -> tuple[bool, list[str]]:
-    """Decide whether to passthrough to `terraform` and, if so, what to forward.
+@self_banner_app.command("check", help="Parse and validate a tfvars banner without running terraform.")
+def self_banner_check(
+    ctx: typer.Context,
+    tfvars: Annotated[
+        pathlib.Path,
+        typer.Argument(exists=True, file_okay=True, dir_okay=False, readable=True),
+    ],
+) -> None:
+    summary = self_commands.do_self_banner_check(_config(ctx), tfvars=tfvars)
+    typer.echo(json.dumps(summary, indent=2, sort_keys=True))
 
-    Returns (is_passthrough, terraform_args). Any leading flags (e.g.
-    `--version`, `--help`) keep us in the Typer app.
-    """
+
+# ---- Top-level dispatcher -----------------------------------------------------
+
+
+def _strip_global_flags(argv: list[str]) -> tuple[list[str], bool, bool]:
+    """Pull `--verbose` / `--dry-run` out of argv, stopping at the first `--`."""
+    out: list[str] = []
+    verbose = False
+    dry_run = False
+    seen_dash_dash = False
+    for arg in argv:
+        if arg == "--":
+            seen_dash_dash = True
+            out.append(arg)
+            continue
+        if not seen_dash_dash and arg == "--verbose":
+            verbose = True
+            continue
+        if not seen_dash_dash and arg == "--dry-run":
+            dry_run = True
+            continue
+        out.append(arg)
+    return out, verbose, dry_run
+
+
+def _split_passthrough(argv: list[str]) -> tuple[bool, list[str]]:
+    """Decide whether to passthrough to `terraform` and, if so, what to forward."""
     for i, arg in enumerate(argv):
         if arg.startswith("-"):
             continue
@@ -225,13 +279,35 @@ def _split_passthrough(argv: list[str]) -> tuple[bool, list[str]]:
 
 
 def main() -> None:
-    """Entry point: dispatch unknown subcommands straight to `terraform`."""
-    is_passthrough, forwarded = _split_passthrough(sys.argv[1:])
-    if is_passthrough:
-        cfg = Config.discover()
-        commands.do_passthrough(cfg, forwarded)
-        return
-    app()
+    """Entry point: handle global flags, route, and translate errors to exit codes."""
+    args, verbose, dry_run = _strip_global_flags(sys.argv[1:])
+    terraform.set_runtime_options(dry_run=dry_run, verbose=verbose)
+
+    try:
+        is_passthrough, forwarded = _split_passthrough(args)
+        if is_passthrough:
+            cfg = Config.discover()
+            commands.do_passthrough(cfg, forwarded)
+            return
+        sys.argv = [sys.argv[0], *args]
+        app()
+    except terraform.TerraformExit as exc:
+        sys.exit(exc.code)
+    except banner.BannerError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except banner.ProjectInfoNotFoundError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except commands.StateNotInitializedError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except commands.StaleTfplanError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except ConfigError as exc:
+        typer.echo(f"config error: {exc}", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

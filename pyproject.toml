@@ -57,7 +57,7 @@ distribution = true
 
 [tool.pdm.build]
 package-dir = "src"
-includes = ["src/tf_project"]
+includes = ["src/tf_project", "src/tf_project/py.typed"]
 excludes = [
     "docs",
     "build",
@@ -70,6 +70,7 @@ excludes = [
 ]
 source-includes = [
     "README.md",
+    "CHANGELOG.md",
 ]
 editable-backend = "path"
 
@@ -123,6 +124,9 @@ line-ending = "lf"
 ]
 "src/tf_project/commands.py" = [
     "T201",  # print() — user-facing CLI output
+]
+"src/tf_project/terraform.py" = [
+    "T201",  # print() — dry-run / verbose / error output to stderr
 ]
 
 [tool.ruff.lint.isort]

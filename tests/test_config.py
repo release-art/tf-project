@@ -138,6 +138,37 @@ def test_terraform_binary_explicit_bare_name_kept(tmp_path: pathlib.Path) -> Non
     assert cfg.terraform_binary == "tofu"
 
 
+def test_backend_config_table_loaded(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+
+        [tf_project.backend_config]
+        resource_group_name = "rg"
+        storage_account_name = "sa"
+        """,
+    )
+    cfg = Config.discover(tmp_path)
+    assert cfg.backend_config == {"resource_group_name": "rg", "storage_account_name": "sa"}
+
+
+def test_backend_config_bad_type_raises(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+
+        [tf_project.backend_config]
+        bad = 123
+        """,
+    )
+    with pytest.raises(ConfigError, match="backend_config"):
+        Config.discover(tmp_path)
+
+
 def test_bad_secrets_command_raises(tmp_path: pathlib.Path) -> None:
     _write_tf_project_toml(
         tmp_path,

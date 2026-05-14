@@ -115,3 +115,18 @@ def test_self_doctor_flags_missing_terraform_binary_path(config: Config) -> None
     checks = self_commands.do_self_doctor(cfg)
     bin_check = next(c for c in checks if c.name.startswith("terraform binary"))
     assert bin_check.ok is False
+
+
+def test_self_banner_check_summary(config: Config, tfvars: pathlib.Path) -> None:
+    tfvars.write_text('# {"header":"terraform","project":"demo","env":{"A":"1"},"state_key":"k"}\nfoo = "bar"\n')
+    summary = self_commands.do_self_banner_check(config, tfvars=tfvars)
+    assert summary["project"] == "demo"
+    assert summary["env"] == {"A": "1"}
+    assert summary["backend_config"] == {"key": "k"}
+    assert summary["source_root"].endswith("/terraform/demo")
+
+
+def test_self_banner_check_raises_on_invalid(config: Config, tfvars: pathlib.Path) -> None:
+    tfvars.write_text('# {"header":"terraform","project":""}\nfoo = "bar"\n')
+    with pytest.raises(self_commands.banner.BannerError):
+        self_commands.do_self_banner_check(config, tfvars=tfvars)

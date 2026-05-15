@@ -181,6 +181,22 @@ def output(ctx: typer.Context) -> None:
     commands.do_output(_config(ctx), extra=ctx.args)
 
 
+@app.command(
+    "import",
+    context_settings=PASSTHROUGH_CTX,
+    help=(
+        "Import an existing resource into the Terraform state. Forwards "
+        "the decrypted tfvars + saved env so the provider config resolves."
+    ),
+)
+def import_cmd(
+    ctx: typer.Context,
+    address: Annotated[str, typer.Argument(help="Target resource address (e.g. `aws_s3_bucket.foo`).")],
+    resource_id: Annotated[str, typer.Argument(metavar="ID", help="Provider-specific ID of the existing resource.")],
+) -> None:
+    commands.do_import(_config(ctx), address=address, resource_id=resource_id, extra=ctx.args)
+
+
 @app.command("state-mv", context_settings=PASSTHROUGH_CTX, help="Move a resource in the Terraform state.")
 def state_mv(
     ctx: typer.Context,

@@ -236,6 +236,8 @@ def do_self_trace(
     targets: list[str] | None = None,
     replaces: list[str] | None = None,
     extra: list[str] | None = None,
+    import_address: str = "<RESOURCE_ADDRESS>",
+    import_id: str = "<RESOURCE_ID>",
 ) -> list[str]:
     """Return the argv `tfp <subcommand>` would build, without invoking anything.
 
@@ -266,6 +268,14 @@ def do_self_trace(
             config, state=state, var_file=_TRACE_PLACEHOLDER, targets=targets, extra=extra
         ),
         "output": lambda: commands.build_output_argv(config, state=state, extra=extra),
+        "import": lambda: commands.build_import_argv(
+            config,
+            state=state,
+            var_file=_TRACE_PLACEHOLDER,
+            address=import_address,
+            resource_id=import_id,
+            extra=extra,
+        ),
     }
     if subcommand not in builders:
         raise SelfCommandError(f"Unknown subcommand {subcommand!r}. Choose from: {', '.join(sorted(builders))}.")

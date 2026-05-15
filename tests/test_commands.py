@@ -328,6 +328,24 @@ def test_init_passes_backend_config_table(
     assert "-backend-config storage_account_name=sa" in flat
 
 
+def test_import_forwards_var_file_and_env(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_import(config, address="aws_s3_bucket.foo", resource_id="my-bucket")
+    cmd = run_calls[0]["cmd"]
+    env = run_calls[0]["env"]
+    assert isinstance(cmd, list)
+    assert "import" in cmd
+    assert cmd[-2:] == ["aws_s3_bucket.foo", "my-bucket"]
+    assert any(a.startswith("-var-file=") for a in cmd)
+    assert isinstance(env, dict) and env["ARM_SUBSCRIPTION_ID"] == "abc"
+
+
+def test_import_is_wrapped_not_passthrough() -> None:
+    assert "import" in commands.WRAPPED_SUBCOMMANDS
+
+
 def test_passthrough_uses_exec(monkeypatch: pytest.MonkeyPatch, config: Config) -> None:
     """do_passthrough must invoke terraform.exec_passthrough, not terraform.run."""
     exec_calls: list[list[str]] = []

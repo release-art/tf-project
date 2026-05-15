@@ -16,7 +16,7 @@ from tf_project.state import MyState, try_exclusive_lock
 # Subcommands implemented natively below; everything else falls through to
 # `terraform` directly via `do_passthrough`.
 WRAPPED_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "last"}
+    {"init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "last", "import"}
 )
 
 TFPLAN_META_SUFFIX = ".meta.json"
@@ -184,6 +184,26 @@ def build_destroy_argv(
     ]
 
 
+def build_import_argv(
+    config: Config,
+    *,
+    state: MyState,
+    var_file: str,
+    address: str,
+    resource_id: str,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    return [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "import",
+        f"-var-file={var_file}",
+        *_extras(extra),
+        address,
+        resource_id,
+    ]
+
+
 def build_output_argv(config: Config, *, state: MyState, extra: Sequence[str] | None = None) -> list[str]:
     return [
         config.terraform_binary,
@@ -315,6 +335,28 @@ def do_fmt(config: Config, *, extra: Sequence[str] | None = None) -> None:
 def do_output(config: Config, *, extra: Sequence[str] | None = None) -> None:
     state = _require_state(config)
     terraform.run(build_output_argv(config, state=state, extra=extra))
+
+
+def do_import(
+    config: Config,
+    *,
+    address: str,
+    resource_id: str,
+    extra: Sequence[str] | None = None,
+) -> None:
+    state = _require_state(config)
+    with state.decrypted_tfvars(_provider(config)) as decrypted:
+        terraform.run(
+            build_import_argv(
+                config,
+                state=state,
+                var_file=str(decrypted),
+                address=address,
+                resource_id=resource_id,
+                extra=extra,
+            ),
+            env=terraform.merged_env(state.environ),
+        )
 
 
 def do_state_mv(

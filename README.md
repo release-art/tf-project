@@ -100,6 +100,10 @@ tfp destroy -t module.foo.bar   # targeted destroy
 tfp fmt                         # terraform fmt -recursive over terraform/ + tfvars/
 tfp output                      # terraform output -json
 tfp state-mv aws_x.a aws_x.b    # terraform state mv
+tfp import aws_s3_bucket.foo my-bucket
+                                # terraform import — forwards the decrypted
+                                # tfvars + saved env so provider blocks
+                                # that reference variables can resolve
 tfp status                      # one-line summary of the current init
 tfp last                        # last terraform invocation (argv + exit code)
 ```

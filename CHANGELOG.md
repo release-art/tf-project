@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `tfp import <ADDRESS> <ID>` — promoted from raw passthrough to a wrapped
+  subcommand. Forwards the decrypted tfvars (`-var-file`) and the saved
+  env so provider blocks that reference variables can resolve. Extra
+  terraform flags after the positional args still passthrough.
 - `tfp self lock` now supports the **AWS S3 + DynamoDB** backend in addition
   to azurerm. Backend is auto-detected from the saved init state's
   `backend_config` (azurerm = `storage_account_name`+`container_name`,

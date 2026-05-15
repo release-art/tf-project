@@ -27,7 +27,7 @@ def test_version_flag(runner: CliRunner) -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "self"],
+    ["init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "last", "import", "self"],
 )
 def test_subcommand_help(runner: CliRunner, subcommand: str) -> None:
     result = runner.invoke(app, [subcommand, "--help"])
@@ -92,6 +92,7 @@ def test_cli_dispatches_init(
         (["--help"], False, []),
         (["status"], False, []),
         (["self", "doctor"], False, []),
+        (["import", "a", "b"], False, []),
         (["validate"], True, ["validate"]),
         (["validate", "-json"], True, ["validate", "-json"]),
         (["workspace", "list"], True, ["workspace", "list"]),

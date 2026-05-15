@@ -233,7 +233,32 @@ def test_plan_writes_tfplan_meta(config: Config, tfvars: pathlib.Path, run_calls
     meta = pathlib.Path(config.tfplan_file.as_posix() + commands.TFPLAN_META_SUFFIX)
     assert meta.exists()
     payload = json.loads(meta.read_text())
-    assert "tfvars_sha256" in payload
+    assert "inputs_sha256" in payload
+
+
+def test_apply_detects_changed_tf_source(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)
+    src = config.terraform_dir / "demo"
+    src.mkdir(parents=True, exist_ok=True)
+    (src / "main.tf").write_text('resource "null_resource" "a" {}\n')
+    commands.do_plan(config)
+    config.tfplan_file.write_bytes(b"plan")
+    (src / "main.tf").write_text('resource "null_resource" "b" {}\n')
+    with pytest.raises(commands.StaleTfplanError):
+        commands.do_apply(config)
+
+
+def test_legacy_tfvars_sha256_field_still_recognised(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)
+    config.tfplan_file.write_bytes(b"plan")
+    meta = pathlib.Path(config.tfplan_file.as_posix() + commands.TFPLAN_META_SUFFIX)
+    meta.write_text(json.dumps({"tfvars_sha256": "deadbeef" * 8}))
+    with pytest.raises(commands.StaleTfplanError):
+        commands.do_apply(config)
 
 
 def test_apply_rejects_stale_tfplan(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:

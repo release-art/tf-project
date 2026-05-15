@@ -122,3 +122,32 @@ def test_strip_global_flags(argv: list[str], want_args: list[str], want_verbose:
     assert args == want_args
     assert verbose is want_verbose
     assert dry_run is want_dry_run
+
+
+def test_complete_tfvars_lists_banner_projects(project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """The shell-completion helper should surface tfvars files with project labels."""
+    import json
+
+    (project_tree / "tf_project.toml").write_text(
+        "[tf_project]\n"
+        'terraform_dir = "terraform"\n'
+        'tfvars_dir = "tfvars"\n'
+        'tmp_dir = "tmp"\n'
+        'state_key_prefix = ""\n\n'
+        "[tf_project.secrets]\n"
+        "command = []\n"
+    )
+    # Add a second tfvars with a different project label.
+    (project_tree / "tfvars" / "prod.tfvars").write_text(
+        f'# {json.dumps({"header": "terraform", "project": "prod-app"})}\nfoo = "bar"\n'
+    )
+    monkeypatch.chdir(project_tree)
+    from tf_project.cli import _complete_tfvars
+
+    items = _complete_tfvars(None, None, "tfvars/")  # type: ignore[arg-type]
+    values = {it.value for it in items}
+    helps = {it.value: it.help for it in items}
+    assert "tfvars/dev.tfvars" in values
+    assert "tfvars/prod.tfvars" in values
+    assert "project=demo" in (helps["tfvars/dev.tfvars"] or "")
+    assert "project=prod-app" in (helps["tfvars/prod.tfvars"] or "")

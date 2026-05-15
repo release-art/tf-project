@@ -11,12 +11,12 @@ from collections.abc import Sequence
 from tf_project import banner, terraform
 from tf_project.config import Config
 from tf_project.secrets import SecretsProvider, provider_from_config
-from tf_project.state import MyState
+from tf_project.state import MyState, try_exclusive_lock
 
 # Subcommands implemented natively below; everything else falls through to
 # `terraform` directly via `do_passthrough`.
 WRAPPED_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status"}
+    {"init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "last"}
 )
 
 TFPLAN_META_SUFFIX = ".meta.json"
@@ -28,6 +28,10 @@ class StateNotInitializedError(RuntimeError):
 
 class StaleTfplanError(RuntimeError):
     """The saved tfplan was generated against a different tfvars content."""
+
+
+def _apply_lock_path(config: Config) -> pathlib.Path:
+    return config.tmp_dir / "apply.lock"
 
 
 def _require_state(config: Config) -> MyState:
@@ -45,8 +49,26 @@ def _extras(extra: Sequence[str] | None) -> list[str]:
     return list(extra) if extra else []
 
 
-def _tfvars_sha256(path: pathlib.Path) -> str:
-    return hashlib.sha256(path.read_bytes()).hexdigest()
+def _plan_inputs_sha256(state: MyState, decrypted: pathlib.Path) -> str:
+    """Rolling hash over the decrypted tfvars plus every `.tf` under source_root.
+
+    Captures both kinds of drift between plan and apply: a changed tfvars
+    (e.g. rotated secrets) and changed module code. Files are visited in
+    sorted order with their path mixed in, so renames also invalidate the
+    plan.
+    """
+    h = hashlib.sha256()
+    h.update(b"tfvars:")
+    h.update(decrypted.read_bytes())
+    source_root = pathlib.Path(state.source_root)
+    if source_root.is_dir():
+        for tf_file in sorted(source_root.rglob("*.tf")):
+            rel = tf_file.relative_to(source_root)
+            h.update(b"\x00tf:")
+            h.update(str(rel).encode("utf-8"))
+            h.update(b"\x00")
+            h.update(tf_file.read_bytes())
+    return h.hexdigest()
 
 
 def _tfplan_meta_path(state: MyState) -> pathlib.Path:
@@ -54,7 +76,7 @@ def _tfplan_meta_path(state: MyState) -> pathlib.Path:
 
 
 def _write_tfplan_meta(state: MyState, *, decrypted: pathlib.Path) -> None:
-    meta = {"tfvars_sha256": _tfvars_sha256(decrypted)}
+    meta = {"inputs_sha256": _plan_inputs_sha256(state, decrypted)}
     _tfplan_meta_path(state).write_text(json.dumps(meta, sort_keys=True))
 
 
@@ -62,14 +84,114 @@ def _check_tfplan_fresh(state: MyState, *, decrypted: pathlib.Path) -> None:
     meta_path = _tfplan_meta_path(state)
     if not meta_path.exists():
         return
-    expected = json.loads(meta_path.read_text()).get("tfvars_sha256")
-    actual = _tfvars_sha256(decrypted)
+    payload = json.loads(meta_path.read_text())
+    # Accept the legacy field name from earlier versions for forward-compat.
+    expected = payload.get("inputs_sha256") or payload.get("tfvars_sha256")
+    actual = _plan_inputs_sha256(state, decrypted)
     if expected and expected != actual:
         raise StaleTfplanError(
-            f"Saved tfplan at {state.tfplan_location} was generated against a different "
-            f"tfvars content (sha256 {expected[:12]}…) than the current one "
+            f"Saved tfplan at {state.tfplan_location} was generated against different "
+            f"inputs (sha256 {expected[:12]}…) than the current tfvars + .tf source "
             f"(sha256 {actual[:12]}…). Re-run `tfp plan` or use `tfp apply --force`."
         )
+
+
+def build_init_argv(config: Config, *, state: MyState, extra: Sequence[str] | None = None) -> list[str]:
+    cmd = [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "init",
+        "-upgrade",
+        "-reconfigure",
+        *_extras(extra),
+    ]
+    for key, value in state.backend_config.items():
+        cmd.extend(["-backend-config", f"{key}={value}"])
+    return cmd
+
+
+def build_plan_argv(
+    config: Config,
+    *,
+    state: MyState,
+    var_file: str,
+    targets: Sequence[str] | None = None,
+    replaces: Sequence[str] | None = None,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    return [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "plan",
+        f"-var-file={var_file}",
+        *terraform.target_args(targets),
+        *terraform.replace_args(replaces),
+        *_extras(extra),
+        f"-out={state.tfplan_location}",
+    ]
+
+
+def build_apply_argv(
+    config: Config,
+    *,
+    state: MyState,
+    var_file: str,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    return [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "apply",
+        f"-var-file={var_file}",
+        *_extras(extra),
+        state.tfplan_location,
+    ]
+
+
+def build_refresh_argv(
+    config: Config,
+    *,
+    state: MyState,
+    var_file: str,
+    targets: Sequence[str] | None = None,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    return [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "apply",
+        f"-var-file={var_file}",
+        *terraform.target_args(targets),
+        *_extras(extra),
+    ]
+
+
+def build_destroy_argv(
+    config: Config,
+    *,
+    state: MyState,
+    var_file: str,
+    targets: Sequence[str] | None = None,
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    return [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "destroy",
+        f"-var-file={var_file}",
+        *terraform.target_args(targets),
+        *_extras(extra),
+    ]
+
+
+def build_output_argv(config: Config, *, state: MyState, extra: Sequence[str] | None = None) -> list[str]:
+    return [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "output",
+        "-json",
+        *_extras(extra),
+    ]
 
 
 def do_init(config: Config, *, tfvars: pathlib.Path, extra: Sequence[str] | None = None) -> None:
@@ -96,17 +218,7 @@ def do_init(config: Config, *, tfvars: pathlib.Path, extra: Sequence[str] | None
         backend_config=backend_config,
     )
 
-    cmd = [
-        config.terraform_binary,
-        f"-chdir={state.source_root}",
-        "init",
-        "-upgrade",
-        "-reconfigure",
-        *_extras(extra),
-    ]
-    for key, value in state.backend_config.items():
-        cmd.extend(["-backend-config", f"{key}={value}"])
-    terraform.run(cmd)
+    terraform.run(build_init_argv(config, state=state, extra=extra))
     state.save(config)
 
 
@@ -120,16 +232,14 @@ def do_plan(
     state = _require_state(config)
     with state.decrypted_tfvars(_provider(config)) as decrypted:
         terraform.run(
-            [
-                config.terraform_binary,
-                f"-chdir={state.source_root}",
-                "plan",
-                f"-var-file={decrypted}",
-                *terraform.target_args(targets),
-                *terraform.replace_args(replaces),
-                *_extras(extra),
-                f"-out={state.tfplan_location}",
-            ],
+            build_plan_argv(
+                config,
+                state=state,
+                var_file=str(decrypted),
+                targets=targets,
+                replaces=replaces,
+                extra=extra,
+            ),
             env=terraform.merged_env(state.environ),
         )
         _write_tfplan_meta(state, decrypted=decrypted)
@@ -137,22 +247,16 @@ def do_plan(
 
 def do_apply(config: Config, *, force: bool = False, extra: Sequence[str] | None = None) -> None:
     state = _require_state(config)
-    with state.decrypted_tfvars(_provider(config)) as decrypted:
-        if not force:
-            _check_tfplan_fresh(state, decrypted=decrypted)
-        terraform.run(
-            [
-                config.terraform_binary,
-                f"-chdir={state.source_root}",
-                "apply",
-                f"-var-file={decrypted}",
-                *_extras(extra),
-                state.tfplan_location,
-            ],
-            env=terraform.merged_env(state.environ),
-        )
-    pathlib.Path(state.tfplan_location).unlink(missing_ok=True)
-    _tfplan_meta_path(state).unlink(missing_ok=True)
+    with try_exclusive_lock(_apply_lock_path(config)):
+        with state.decrypted_tfvars(_provider(config)) as decrypted:
+            if not force:
+                _check_tfplan_fresh(state, decrypted=decrypted)
+            terraform.run(
+                build_apply_argv(config, state=state, var_file=str(decrypted), extra=extra),
+                env=terraform.merged_env(state.environ),
+            )
+        pathlib.Path(state.tfplan_location).unlink(missing_ok=True)
+        _tfplan_meta_path(state).unlink(missing_ok=True)
 
 
 def do_refresh(
@@ -162,18 +266,18 @@ def do_refresh(
     extra: Sequence[str] | None = None,
 ) -> None:
     state = _require_state(config)
-    with state.decrypted_tfvars(_provider(config)) as decrypted:
-        terraform.run(
-            [
-                config.terraform_binary,
-                f"-chdir={state.source_root}",
-                "apply",
-                f"-var-file={decrypted}",
-                *terraform.target_args(targets),
-                *_extras(extra),
-            ],
-            env=terraform.merged_env(state.environ),
-        )
+    with try_exclusive_lock(_apply_lock_path(config)):
+        with state.decrypted_tfvars(_provider(config)) as decrypted:
+            terraform.run(
+                build_refresh_argv(
+                    config,
+                    state=state,
+                    var_file=str(decrypted),
+                    targets=targets,
+                    extra=extra,
+                ),
+                env=terraform.merged_env(state.environ),
+            )
 
 
 def do_destroy(
@@ -183,18 +287,18 @@ def do_destroy(
     extra: Sequence[str] | None = None,
 ) -> None:
     state = _require_state(config)
-    with state.decrypted_tfvars(_provider(config)) as decrypted:
-        terraform.run(
-            [
-                config.terraform_binary,
-                f"-chdir={state.source_root}",
-                "destroy",
-                f"-var-file={decrypted}",
-                *terraform.target_args(targets),
-                *_extras(extra),
-            ],
-            env=terraform.merged_env(state.environ),
-        )
+    with try_exclusive_lock(_apply_lock_path(config)):
+        with state.decrypted_tfvars(_provider(config)) as decrypted:
+            terraform.run(
+                build_destroy_argv(
+                    config,
+                    state=state,
+                    var_file=str(decrypted),
+                    targets=targets,
+                    extra=extra,
+                ),
+                env=terraform.merged_env(state.environ),
+            )
 
 
 def do_fmt(config: Config, *, extra: Sequence[str] | None = None) -> None:
@@ -210,15 +314,7 @@ def do_fmt(config: Config, *, extra: Sequence[str] | None = None) -> None:
 
 def do_output(config: Config, *, extra: Sequence[str] | None = None) -> None:
     state = _require_state(config)
-    terraform.run(
-        [
-            config.terraform_binary,
-            f"-chdir={state.source_root}",
-            "output",
-            "-json",
-            *_extras(extra),
-        ]
-    )
+    terraform.run(build_output_argv(config, state=state, extra=extra))
 
 
 def do_state_mv(

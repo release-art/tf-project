@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
+import json
 import logging
 import os
+import pathlib
 import shlex
 import subprocess
 import sys
@@ -33,15 +36,22 @@ class TerraformExit(SystemExit):
 class _RuntimeOptions:
     dry_run: bool = False
     verbose: bool = False
+    last_invocation_path: pathlib.Path | None = None
 
 
 _options = _RuntimeOptions()
 
 
-def set_runtime_options(*, dry_run: bool = False, verbose: bool = False) -> None:
+def set_runtime_options(
+    *,
+    dry_run: bool = False,
+    verbose: bool = False,
+    last_invocation_path: pathlib.Path | None = None,
+) -> None:
     """Set process-wide flags consulted by `run` and `exec_passthrough`."""
     _options.dry_run = dry_run
     _options.verbose = verbose
+    _options.last_invocation_path = last_invocation_path
 
 
 def _format_argv(cmd: list[str]) -> str:
@@ -52,6 +62,23 @@ def _announce(cmd: list[str]) -> None:
     if _options.verbose or _options.dry_run:
         prefix = "[dry-run]" if _options.dry_run else "$"
         print(f"{prefix} {_format_argv(cmd)}", file=sys.stderr)
+
+
+def _record_invocation(cmd: list[str], *, exit_code: int | None) -> None:
+    path = _options.last_invocation_path
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            "argv": cmd,
+            "exit_code": exit_code,
+        }
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+    except OSError:
+        # Recording is best-effort; don't crash the real command for it.
+        pass
 
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
@@ -72,6 +99,7 @@ def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
         proc = subprocess.Popen(cmd, env=env)
     except FileNotFoundError as exc:
         print(f"{cmd[0]}: command not found", file=sys.stderr)
+        _record_invocation(cmd, exit_code=127)
         raise TerraformExit(127) from exc
     while True:
         try:
@@ -80,6 +108,7 @@ def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
         except KeyboardInterrupt:
             # terraform got SIGINT too; let it finish cleanly.
             continue
+    _record_invocation(cmd, exit_code=rc)
     if rc != 0:
         raise TerraformExit(rc)
 
@@ -93,6 +122,9 @@ def exec_passthrough(cmd: list[str], *, env: dict[str, str] | None = None) -> No
     _announce(cmd)
     if _options.dry_run:
         return
+    # Record before exec, since exec replaces the process and we won't get
+    # to write afterwards. Exit code is unknown for passthrough.
+    _record_invocation(cmd, exit_code=None)
     try:
         if env is None:
             os.execvp(cmd[0], cmd)

@@ -18,6 +18,10 @@ else:  # pragma: no cover — Windows path
     fcntl = None  # type: ignore[assignment]
 
 
+class LockBusyError(RuntimeError):
+    """Raised by `try_exclusive_lock` when the lock is already held."""
+
+
 @contextlib.contextmanager
 def _exclusive_lock(lock_path: pathlib.Path) -> Iterator[None]:
     """POSIX advisory lock on `lock_path`. No-op on platforms without fcntl."""
@@ -27,6 +31,27 @@ def _exclusive_lock(lock_path: pathlib.Path) -> Iterator[None]:
         return
     with lock_path.open("a+") as fh:
         fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def try_exclusive_lock(lock_path: pathlib.Path) -> Iterator[None]:
+    """Non-blocking POSIX lock; raises LockBusyError if already held.
+
+    No-op on platforms without fcntl (Windows).
+    """
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    if fcntl is None:  # pragma: no cover
+        yield
+        return
+    with lock_path.open("a+") as fh:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            raise LockBusyError(f"Lock held by another process: {lock_path}") from exc
         try:
             yield
         finally:

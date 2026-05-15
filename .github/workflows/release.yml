@@ -42,9 +42,47 @@ jobs:
         run: |
           pdm publish --no-build
 
+  gh-release:
+    needs:
+      - publish-package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write  # to create a GitHub Release
+    steps:
+      - uses: actions/checkout@v6
+      - name: Read version
+        id: version
+        run: |
+          v=$(python -c "import re,sys; t=open('src/tf_project/__version__.py').read(); m=re.search(r'\"(.*?)\"', t); sys.stdout.write(m.group(1))")
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+      - name: Extract release notes from CHANGELOG
+        id: notes
+        run: |
+          python <<'PY' > release-notes.md
+          import pathlib, re, sys
+          text = pathlib.Path('CHANGELOG.md').read_text()
+          m = re.search(r'## \[Unreleased\]\s*\n(.*?)(?=\n## )', text, re.DOTALL)
+          notes = (m.group(1).strip() if m else '').strip()
+          sys.stdout.write(notes or '_No changelog entries for this release._')
+          PY
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="v${{ steps.version.outputs.version }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "Release $tag already exists, skipping."
+            exit 0
+          fi
+          gh release create "$tag" \
+            --title "$tag" \
+            --notes-file release-notes.md \
+            --target "${{ github.sha }}"
+
   bump-version:
     needs:
       - publish-package
+      - gh-release
     runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@v2

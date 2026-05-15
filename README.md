@@ -101,6 +101,7 @@ tfp fmt                         # terraform fmt -recursive over terraform/ + tfv
 tfp output                      # terraform output -json
 tfp state-mv aws_x.a aws_x.b    # terraform state mv
 tfp status                      # one-line summary of the current init
+tfp last                        # last terraform invocation (argv + exit code)
 ```
 
 ### Global flags
@@ -143,19 +144,27 @@ lock_created   = 2026-05-14T12:00:00Z
 To release via terraform: tfp force-unlock 12345678-90ab-cdef-1234-567890abcdef
 ```
 
-`tfp self lock {status,break}` shells out to `az storage blob` and so
-requires the Azure CLI to be installed and authenticated. It reads the
-storage account / container / blob from the saved init state — so this only
-works after `tfp init` has captured `[tf_project.backend_config]`
-(`storage_account_name`, `container_name`) and the `key`.
+`tfp self lock` auto-detects the backend from the saved init state's
+`backend_config`:
+
+- **azurerm** — `storage_account_name` + `container_name` present.
+  Shells out to `az storage blob`.
+- **s3** — `bucket` + `dynamodb_table` present. Shells out to
+  `aws dynamodb` (uses the DynamoDB-locking variant of the S3 backend).
+
+Both need the respective CLI installed and authenticated, and they read
+the relevant fields from the state saved by `tfp init`.
 
 Two options once you have the ID:
 
-- **`tfp force-unlock <ID>`** — the polite version: terraform releases the
-  lease *and* deletes the lock metadata. Works for any backend.
-- **`tfp self lock break`** — the blunt version: breaks the blob lease
-  without going through terraform. Useful when terraform itself can't
-  reach the backend or when you don't have the ID.
+- **`tfp force-unlock <ID>`** or **`tfp self lock break`** (default) — the
+  polite version: terraform releases the lease *and* deletes the lock
+  metadata. Works for any backend. `self lock break` discovers the ID
+  itself; `force-unlock` takes it as an argument.
+- **`tfp self lock break --blunt`** — skips terraform and releases the
+  lock at the backend level (azurerm: break the blob lease; s3: delete
+  the DynamoDB lock item). Use when terraform itself can't reach the
+  backend.
 
 ### Apply safety
 
@@ -202,8 +211,10 @@ tfp self state show            # pretty-print the saved init state
 tfp self state clear           # delete the saved state file
 tfp self doctor                # sanity-check the environment (PATH, dirs, ...)
 tfp self banner check <tfvars> # validate a tfvars banner; print resolved fields
-tfp self lock status           # show Azure blob-lease state of the remote tfstate
-tfp self lock break            # break the lease after a hard-kill left state locked
+tfp self snapshot              # `terraform state pull` to <tmp_dir>/snapshot-<ts>.tfstate
+tfp self trace <subcommand>    # print the argv tfp would build; no exec, no op inject
+tfp self lock status           # remote-state lock state (azurerm or s3+dynamodb)
+tfp self lock break            # polite-by-default release; --blunt skips terraform
 tfp force-unlock <LOCK_ID>     # backend-agnostic, via terraform passthrough
 ```
 

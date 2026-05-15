@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `tfp state` subcommand group — all eight terraform state subcommands
+  (`list`, `show`, `mv`, `rm`, `pull`, `push`, `replace-provider`,
+  `identities`) wrapped and discoverable in `tfp --help`. Each forwards
+  `-chdir` + the saved env.
+
+### Removed
+- `tfp state-mv` top-level command. Use `tfp state mv` instead.
+- `commands.do_state_mv` public helper. Use `commands.do_state(subcommand="mv", ...)`.
 - `tfp import <ADDRESS> <ID>` — promoted from raw passthrough to a wrapped
   subcommand. Forwards the decrypted tfvars (`-var-file`) and the saved
   env so provider blocks that reference variables can resolve. Extra

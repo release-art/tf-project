@@ -27,7 +27,20 @@ def test_version_flag(runner: CliRunner) -> None:
 
 @pytest.mark.parametrize(
     "subcommand",
-    ["init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "last", "import", "self"],
+    [
+        "init",
+        "plan",
+        "apply",
+        "refresh",
+        "destroy",
+        "fmt",
+        "output",
+        "state",
+        "status",
+        "last",
+        "import",
+        "self",
+    ],
 )
 def test_subcommand_help(runner: CliRunner, subcommand: str) -> None:
     result = runner.invoke(app, [subcommand, "--help"])
@@ -53,6 +66,24 @@ def test_subcommand_help(runner: CliRunner, subcommand: str) -> None:
     ],
 )
 def test_self_subcommand_help(runner: CliRunner, subcommand: str) -> None:
+    result = runner.invoke(app, [*subcommand.split(), "--help"])
+    assert result.exit_code == 0, result.stdout
+
+
+@pytest.mark.parametrize(
+    "subcommand",
+    [
+        "state list",
+        "state show",
+        "state mv",
+        "state rm",
+        "state pull",
+        "state push",
+        "state replace-provider",
+        "state identities",
+    ],
+)
+def test_state_subcommand_help(runner: CliRunner, subcommand: str) -> None:
     result = runner.invoke(app, [*subcommand.split(), "--help"])
     assert result.exit_code == 0, result.stdout
 
@@ -93,6 +124,7 @@ def test_cli_dispatches_init(
         (["status"], False, []),
         (["self", "doctor"], False, []),
         (["import", "a", "b"], False, []),
+        (["state", "rm", "x"], False, []),
         (["validate"], True, ["validate"]),
         (["validate", "-json"], True, ["validate", "-json"]),
         (["workspace", "list"], True, ["workspace", "list"]),

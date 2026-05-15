@@ -110,9 +110,44 @@ def test_output_requires_state(config: Config) -> None:
 
 def test_state_mv(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
     _save_state(config, tfvars=tfvars)
-    commands.do_state_mv(config, source="a.b", destination="c.d")
+    commands.do_state(config, subcommand="mv", args=["a.b", "c.d"])
     cmd = run_calls[0]["cmd"]
     assert cmd[-4:] == ["state", "mv", "a.b", "c.d"]
+
+
+def test_do_state_rm(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_state(config, subcommand="rm", args=["aws_s3_bucket.foo", "aws_s3_bucket.bar"])
+    cmd = run_calls[0]["cmd"]
+    env = run_calls[0]["env"]
+    assert isinstance(cmd, list)
+    assert "state" in cmd
+    assert "rm" in cmd
+    assert cmd[-2:] == ["aws_s3_bucket.foo", "aws_s3_bucket.bar"]
+    # No -var-file for state subcommands (they don't accept it).
+    assert not any(a.startswith("-var-file=") for a in cmd)
+    assert isinstance(env, dict) and env["ARM_SUBSCRIPTION_ID"] == "abc"
+
+
+def test_do_state_list_no_addresses(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_state(config, subcommand="list", args=[])
+    cmd = run_calls[0]["cmd"]
+    assert cmd[-2:] == ["state", "list"]
+
+
+def test_do_state_extras_before_positionals(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    _save_state(config, tfvars=tfvars)
+    commands.do_state(config, subcommand="rm", args=["aws_x.foo"], extra=["-dry-run", "-lock=false"])
+    cmd = run_calls[0]["cmd"]
+    assert cmd.index("-dry-run") < cmd.index("aws_x.foo")
+    assert cmd.index("-lock=false") < cmd.index("aws_x.foo")
+
+
+def test_state_is_wrapped_not_passthrough() -> None:
+    assert "state" in commands.WRAPPED_SUBCOMMANDS
 
 
 def test_plan_extra_args_forwarded(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:

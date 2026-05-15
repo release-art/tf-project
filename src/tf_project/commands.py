@@ -16,7 +16,19 @@ from tf_project.state import MyState, try_exclusive_lock
 # Subcommands implemented natively below; everything else falls through to
 # `terraform` directly via `do_passthrough`.
 WRAPPED_SUBCOMMANDS: frozenset[str] = frozenset(
-    {"init", "plan", "apply", "refresh", "destroy", "fmt", "output", "state-mv", "status", "last", "import"}
+    {
+        "init",
+        "plan",
+        "apply",
+        "refresh",
+        "destroy",
+        "fmt",
+        "output",
+        "state",
+        "status",
+        "last",
+        "import",
+    }
 )
 
 TFPLAN_META_SUFFIX = ".meta.json"
@@ -181,6 +193,25 @@ def build_destroy_argv(
         f"-var-file={var_file}",
         *terraform.target_args(targets),
         *_extras(extra),
+    ]
+
+
+def build_state_argv(
+    config: Config,
+    *,
+    state: MyState,
+    subcommand: str,
+    args: Sequence[str],
+    extra: Sequence[str] | None = None,
+) -> list[str]:
+    """Argv for `terraform state <subcommand> [extras...] [args...]`."""
+    return [
+        config.terraform_binary,
+        f"-chdir={state.source_root}",
+        "state",
+        subcommand,
+        *_extras(extra),
+        *args,
     ]
 
 
@@ -359,24 +390,21 @@ def do_import(
         )
 
 
-def do_state_mv(
+def do_state(
     config: Config,
     *,
-    source: str,
-    destination: str,
+    subcommand: str,
+    args: Sequence[str],
     extra: Sequence[str] | None = None,
 ) -> None:
+    """Run `terraform state <subcommand> ...` with `-chdir` + saved env.
+
+    State subcommands talk to the state backend only (not the resource
+    providers), so they don't accept `-var-file` and we don't pass one.
+    """
     state = _require_state(config)
     terraform.run(
-        [
-            config.terraform_binary,
-            f"-chdir={state.source_root}",
-            "state",
-            "mv",
-            *_extras(extra),
-            source,
-            destination,
-        ],
+        build_state_argv(config, state=state, subcommand=subcommand, args=args, extra=extra),
         env=terraform.merged_env(state.environ),
     )
 

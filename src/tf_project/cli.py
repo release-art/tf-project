@@ -197,13 +197,96 @@ def import_cmd(
     commands.do_import(_config(ctx), address=address, resource_id=resource_id, extra=ctx.args)
 
 
-@app.command("state-mv", context_settings=PASSTHROUGH_CTX, help="Move a resource in the Terraform state.")
+# ---- `state` subcommand group -------------------------------------------------
+
+state_app = typer.Typer(
+    name="state",
+    help="Terraform state subcommands (list, mv, rm, pull, push, show, replace-provider, identities).",
+    no_args_is_help=True,
+)
+app.add_typer(state_app, name="state")
+
+
+@state_app.command("list", context_settings=PASSTHROUGH_CTX, help="List resources in the state.")
+def state_list(
+    ctx: typer.Context,
+    addresses: Annotated[
+        list[str] | None,
+        typer.Argument(help="Resource addresses to filter on. Omit to list everything."),
+    ] = None,
+) -> None:
+    commands.do_state(_config(ctx), subcommand="list", args=addresses or [], extra=ctx.args)
+
+
+@state_app.command("show", context_settings=PASSTHROUGH_CTX, help="Show a resource in the state.")
+def state_show(
+    ctx: typer.Context,
+    address: Annotated[str, typer.Argument(help="Resource address to inspect.")],
+) -> None:
+    commands.do_state(_config(ctx), subcommand="show", args=[address], extra=ctx.args)
+
+
+@state_app.command("mv", context_settings=PASSTHROUGH_CTX, help="Move an item in the state.")
 def state_mv(
     ctx: typer.Context,
-    source: Annotated[str, typer.Argument(help="Source resource address")],
-    destination: Annotated[str, typer.Argument(help="Destination resource address")],
+    source: Annotated[str, typer.Argument(help="Source resource address.")],
+    destination: Annotated[str, typer.Argument(help="Destination resource address.")],
 ) -> None:
-    commands.do_state_mv(_config(ctx), source=source, destination=destination, extra=ctx.args)
+    commands.do_state(_config(ctx), subcommand="mv", args=[source, destination], extra=ctx.args)
+
+
+@state_app.command("rm", context_settings=PASSTHROUGH_CTX, help="Remove instances from the state.")
+def state_rm(
+    ctx: typer.Context,
+    addresses: Annotated[
+        list[str],
+        typer.Argument(help="Resource addresses to remove (at least one required)."),
+    ],
+) -> None:
+    commands.do_state(_config(ctx), subcommand="rm", args=addresses, extra=ctx.args)
+
+
+@state_app.command("pull", context_settings=PASSTHROUGH_CTX, help="Pull the current state and write it to stdout.")
+def state_pull(ctx: typer.Context) -> None:
+    commands.do_state(_config(ctx), subcommand="pull", args=[], extra=ctx.args)
+
+
+@state_app.command("push", context_settings=PASSTHROUGH_CTX, help="Update the remote state from a local state file.")
+def state_push(
+    ctx: typer.Context,
+    path: Annotated[
+        pathlib.Path,
+        typer.Argument(exists=True, file_okay=True, dir_okay=False, readable=True, help="Local state file."),
+    ],
+) -> None:
+    commands.do_state(_config(ctx), subcommand="push", args=[str(path)], extra=ctx.args)
+
+
+@state_app.command("replace-provider", context_settings=PASSTHROUGH_CTX, help="Replace provider in the state.")
+def state_replace_provider(
+    ctx: typer.Context,
+    from_provider: Annotated[str, typer.Argument(metavar="FROM", help="Current provider address.")],
+    to_provider: Annotated[str, typer.Argument(metavar="TO", help="Replacement provider address.")],
+) -> None:
+    commands.do_state(
+        _config(ctx),
+        subcommand="replace-provider",
+        args=[from_provider, to_provider],
+        extra=ctx.args,
+    )
+
+
+@state_app.command(
+    "identities", context_settings=PASSTHROUGH_CTX, help="List the identities of resources in the state."
+)
+def state_identities(
+    ctx: typer.Context,
+    addresses: Annotated[
+        list[str] | None,
+        typer.Argument(help="Resource addresses to filter on. Omit for all."),
+    ] = None,
+) -> None:
+    commands.do_state(_config(ctx), subcommand="identities", args=addresses or [], extra=ctx.args)
 
 
 @app.command("last", help="Print the last terraform invocation recorded by tfp (argv + exit code).")

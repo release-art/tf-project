@@ -99,7 +99,14 @@ tfp refresh                     # apply directly (no saved plan)
 tfp destroy -t module.foo.bar   # targeted destroy
 tfp fmt                         # terraform fmt -recursive over terraform/ + tfvars/
 tfp output                      # terraform output -json
-tfp state-mv aws_x.a aws_x.b    # terraform state mv
+tfp state list                  # list resources in state
+tfp state show aws_x.foo
+tfp state mv  aws_x.a aws_x.b
+tfp state rm  aws_x.foo aws_x.bar
+tfp state pull                  # tfstate JSON to stdout
+tfp state push backup.tfstate
+tfp state replace-provider hashicorp/aws registry.acme.local/aws
+tfp state identities            # 1.10+
 tfp import aws_s3_bucket.foo my-bucket
                                 # terraform import — forwards the decrypted
                                 # tfvars + saved env so provider blocks

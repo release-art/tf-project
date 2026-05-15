@@ -196,11 +196,12 @@ def test_self_lock_status_parses_az_output(
         captured["argv"] = argv
         return _fake_az_run(blob_payload)
 
-    monkeypatch.setattr("tf_project.self_commands.subprocess.run", fake_run)
+    monkeypatch.setattr("tf_project.lock.subprocess.run", fake_run)
     status = self_commands.do_self_lock_status(config)
+    assert status.backend == "azurerm"
     assert status.locked is True
-    assert status.lease_state == "leased"
-    assert status.lease_duration == "infinite"
+    assert "lease_state=leased" in status.detail
+    assert "lease_duration=infinite" in status.detail
     assert status.lock_id == "12345678-90ab-cdef-1234-567890abcdef"
     assert status.lock_who == "user@host"
     assert status.lock_operation == "OperationTypePlan"
@@ -219,7 +220,7 @@ def test_self_lock_status_handles_missing_metadata(
     _save_azure_state(config, tfvars)
     blob_payload = json.dumps({"properties": {"lease": {"status": "unlocked", "state": "available"}}, "metadata": {}})
     monkeypatch.setattr(
-        "tf_project.self_commands.subprocess.run",
+        "tf_project.lock.subprocess.run",
         lambda argv, **kw: _fake_az_run(blob_payload),
     )
     status = self_commands.do_self_lock_status(config)
@@ -239,7 +240,7 @@ def test_self_lock_status_handles_unparseable_metadata(
         }
     )
     monkeypatch.setattr(
-        "tf_project.self_commands.subprocess.run",
+        "tf_project.lock.subprocess.run",
         lambda argv, **kw: _fake_az_run(blob_payload),
     )
     status = self_commands.do_self_lock_status(config)
@@ -247,21 +248,89 @@ def test_self_lock_status_handles_unparseable_metadata(
     assert status.lock_id is None
 
 
-def test_self_lock_break_shells_out_to_az(
+def test_self_lock_break_polite_path_uses_force_unlock(
+    config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When the lock ID is recoverable, break should call `terraform force-unlock` first."""
+    import base64
+
+    _save_azure_state(config, tfvars)
+    lock_info = {"ID": "abc-id", "Operation": "OperationTypePlan", "Who": "x", "Created": "y"}
+    metadata_value = base64.b64encode(json.dumps(lock_info).encode()).decode()
+    blob_payload = json.dumps(
+        {
+            "properties": {"lease": {"status": "locked", "state": "leased"}},
+            "metadata": {"terraformlockid": metadata_value},
+        }
+    )
+    monkeypatch.setattr(
+        "tf_project.lock.subprocess.run",
+        lambda argv, **kw: _fake_az_run(blob_payload),
+    )
+    tf_run_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "tf_project.terraform.run",
+        lambda cmd, env=None: tf_run_calls.append(cmd),
+    )
+    result = self_commands.do_self_lock_break(config)
+    assert result.method == "force-unlock"
+    assert result.lock_id == "abc-id"
+    assert tf_run_calls and "force-unlock" in tf_run_calls[0]
+    assert "abc-id" in tf_run_calls[0]
+
+
+def test_self_lock_break_blunt_skips_force_unlock(
     config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _save_azure_state(config, tfvars)
     captured: dict[str, list[str]] = {}
 
     def fake_run(argv: list[str], **kw: object) -> object:
-        captured["argv"] = argv
+        captured.setdefault("calls", [])
+        captured["calls"].append(argv)  # type: ignore[arg-type]
         return _fake_az_run("")
 
-    monkeypatch.setattr("tf_project.self_commands.subprocess.run", fake_run)
-    self_commands.do_self_lock_break(config)
-    assert captured["argv"][:5] == ["az", "storage", "blob", "lease", "break"]
-    assert "--blob-name" in captured["argv"]
-    assert "shared/dev.tfstate" in captured["argv"]
+    monkeypatch.setattr("tf_project.lock.subprocess.run", fake_run)
+    tf_run_called = []
+    monkeypatch.setattr(
+        "tf_project.terraform.run",
+        lambda cmd, env=None: tf_run_called.append(cmd),
+    )
+    result = self_commands.do_self_lock_break(config, blunt=True)
+    assert result.method == "lease-break"
+    assert result.backend == "azurerm"
+    assert tf_run_called == []
+    assert captured["calls"][0][:5] == ["az", "storage", "blob", "lease", "break"]
+
+
+def test_self_lock_break_falls_back_when_terraform_fails(
+    config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """If terraform force-unlock fails, fall through to blunt lease break."""
+    import base64
+
+    from tf_project import terraform as terraform_mod
+
+    _save_azure_state(config, tfvars)
+    lock_info = {"ID": "abc-id"}
+    metadata_value = base64.b64encode(json.dumps(lock_info).encode()).decode()
+    blob_payload = json.dumps(
+        {
+            "properties": {"lease": {"status": "locked", "state": "leased"}},
+            "metadata": {"terraformlockid": metadata_value},
+        }
+    )
+    monkeypatch.setattr(
+        "tf_project.lock.subprocess.run",
+        lambda argv, **kw: _fake_az_run(blob_payload),
+    )
+
+    def boom(cmd: list[str], env: dict[str, str] | None = None) -> None:
+        raise terraform_mod.TerraformExit(1)
+
+    monkeypatch.setattr("tf_project.terraform.run", boom)
+    result = self_commands.do_self_lock_break(config)
+    assert result.method == "lease-break"
 
 
 def test_self_lock_requires_state(config: Config) -> None:
@@ -269,7 +338,7 @@ def test_self_lock_requires_state(config: Config) -> None:
         self_commands.do_self_lock_status(config)
 
 
-def test_self_lock_requires_azure_metadata(
+def test_self_lock_requires_known_backend(
     config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from tf_project.state import MyState
@@ -279,9 +348,9 @@ def test_self_lock_requires_azure_metadata(
         source_root=str(config.terraform_dir / "demo"),
         tfplan_location=str(config.tfplan_file),
         environ={},
-        backend_config={"key": "foo.tfstate"},  # only key; missing account + container
+        backend_config={"key": "foo.tfstate"},  # only key; not azurerm-shaped, not s3-shaped
     ).save(config)
-    with pytest.raises(self_commands.SelfCommandError, match="storage_account_name"):
+    with pytest.raises(self_commands.SelfCommandError, match="Unrecognised backend"):
         self_commands.do_self_lock_status(config)
 
 
@@ -291,8 +360,8 @@ def test_self_lock_handles_missing_az(config: Config, tfvars: pathlib.Path, monk
     def boom(*a: object, **kw: object) -> object:
         raise FileNotFoundError
 
-    monkeypatch.setattr("tf_project.self_commands.subprocess.run", boom)
-    with pytest.raises(self_commands.SelfCommandError, match="Azure CLI"):
+    monkeypatch.setattr("tf_project.lock.subprocess.run", boom)
+    with pytest.raises(self_commands.SelfCommandError, match="not found"):
         self_commands.do_self_lock_status(config)
 
 
@@ -304,6 +373,96 @@ def test_self_lock_handles_az_failure(config: Config, tfvars: pathlib.Path, monk
     def boom(argv: list[str], **kw: object) -> object:
         raise subprocess.CalledProcessError(returncode=1, cmd=argv, output="", stderr="not authorized\n")
 
-    monkeypatch.setattr("tf_project.self_commands.subprocess.run", boom)
+    monkeypatch.setattr("tf_project.lock.subprocess.run", boom)
     with pytest.raises(self_commands.SelfCommandError, match="not authorized"):
-        self_commands.do_self_lock_break(config)
+        self_commands.do_self_lock_break(config, blunt=True)
+
+
+# ---- S3 + DynamoDB lock provider ----------------------------------------------
+
+
+def _save_s3_state(
+    config: Config,
+    tfvars: pathlib.Path,
+    *,
+    extra_backend: dict[str, str] | None = None,
+) -> None:
+    from tf_project.state import MyState
+
+    bc = {
+        "key": "envs/dev/terraform.tfstate",
+        "bucket": "my-tfstate-bucket",
+        "dynamodb_table": "tfstate-locks",
+        "region": "us-east-1",
+    }
+    if extra_backend:
+        bc.update(extra_backend)
+    MyState(
+        tfvars=str(tfvars),
+        source_root=str(config.terraform_dir / "demo"),
+        tfplan_location=str(config.tfplan_file),
+        environ={},
+        backend_config=bc,
+    ).save(config)
+
+
+def test_s3_lock_status_locked(config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _save_s3_state(config, tfvars)
+    captured: dict[str, list[str]] = {}
+
+    info_json = json.dumps({"ID": "aws-lock-id", "Operation": "OperationTypePlan", "Who": "ec2-user@host"})
+    dynamo_payload = json.dumps({"Item": {"LockID": {"S": "x"}, "Info": {"S": info_json}}})
+
+    def fake_run(argv: list[str], **kw: object) -> object:
+        captured["argv"] = argv
+        return _fake_az_run(dynamo_payload)
+
+    monkeypatch.setattr("tf_project.lock.subprocess.run", fake_run)
+    status = self_commands.do_self_lock_status(config)
+    assert status.backend == "s3"
+    assert status.locked is True
+    assert status.lock_id == "aws-lock-id"
+    assert captured["argv"][:3] == ["aws", "dynamodb", "get-item"]
+    assert "--table-name" in captured["argv"]
+    assert "tfstate-locks" in captured["argv"]
+    assert "--region" in captured["argv"]
+    assert "us-east-1" in captured["argv"]
+
+
+def test_s3_lock_status_unlocked(config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _save_s3_state(config, tfvars)
+    monkeypatch.setattr(
+        "tf_project.lock.subprocess.run",
+        lambda argv, **kw: _fake_az_run("{}"),
+    )
+    status = self_commands.do_self_lock_status(config)
+    assert status.locked is False
+    assert status.lock_id is None
+
+
+def test_s3_lock_break_calls_delete_item(config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _save_s3_state(config, tfvars)
+    captured: dict[str, list[str]] = {}
+
+    def fake_run(argv: list[str], **kw: object) -> object:
+        captured["argv"] = argv
+        return _fake_az_run("")
+
+    monkeypatch.setattr("tf_project.lock.subprocess.run", fake_run)
+    self_commands.do_self_lock_break(config, blunt=True)
+    assert captured["argv"][:3] == ["aws", "dynamodb", "delete-item"]
+    assert "tfstate-locks" in captured["argv"]
+
+
+def test_s3_without_dynamodb_table_rejected(config: Config, tfvars: pathlib.Path) -> None:
+    from tf_project.state import MyState
+
+    MyState(
+        tfvars=str(tfvars),
+        source_root=str(config.terraform_dir / "demo"),
+        tfplan_location=str(config.tfplan_file),
+        environ={},
+        backend_config={"key": "k", "bucket": "b"},  # bucket present, no dynamodb_table
+    ).save(config)
+    with pytest.raises(self_commands.SelfCommandError, match="dynamodb_table"):
+        self_commands.do_self_lock_status(config)

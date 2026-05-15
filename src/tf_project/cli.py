@@ -7,12 +7,15 @@ import pathlib
 import sys
 from typing import Annotated
 
+import click
 import typer
+from click.shell_completion import CompletionItem
 
 from tf_project import banner, commands, self_commands, terraform
 from tf_project.__version__ import __version__
 from tf_project.commands import WRAPPED_SUBCOMMANDS
 from tf_project.config import Config, ConfigError
+from tf_project.state import LockBusyError, MyState
 
 SELF_SUBCOMMAND = "self"
 GLOBAL_FLAGS = {"--verbose", "--dry-run"}
@@ -37,6 +40,32 @@ def _config(ctx: typer.Context) -> Config:
     if not isinstance(ctx.obj, Config):
         ctx.obj = Config.discover()
     return ctx.obj
+
+
+def _complete_tfvars(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+    """Tab-completion: list tfvars files under config.tfvars_dir, labelled by project."""
+    try:
+        cfg = Config.discover()
+    except Exception:  # noqa: BLE001 — no config yet → no completions
+        return []
+    out: list[CompletionItem] = []
+    if not cfg.tfvars_dir.is_dir():
+        return out
+    cwd = pathlib.Path.cwd()
+    for path in sorted(cfg.tfvars_dir.rglob("*.tfvars")):
+        try:
+            display = str(path.relative_to(cwd))
+        except ValueError:
+            display = str(path)
+        if not display.startswith(incomplete):
+            continue
+        try:
+            info = banner.find_project_info(path)
+            label = info.get("project") or "(no project)"
+        except (banner.ProjectInfoNotFoundError, OSError):
+            label = "(no banner)"
+        out.append(CompletionItem(value=display, help=f"project={label}"))
+    return out
 
 
 def _version_callback(value: bool) -> None:
@@ -81,10 +110,24 @@ def init(
     ctx: typer.Context,
     tfvars: Annotated[
         pathlib.Path,
-        typer.Argument(exists=True, file_okay=True, dir_okay=False, readable=True),
+        typer.Argument(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            shell_complete=_complete_tfvars,
+        ),
     ],
+    force: Annotated[bool, typer.Option("--force", help="Skip the tfvars-switch confirmation.")] = False,
 ) -> None:
-    commands.do_init(_config(ctx), tfvars=tfvars, extra=ctx.args)
+    cfg = _config(ctx)
+    old = MyState.load(cfg)
+    if old is not None and pathlib.Path(old.tfvars).resolve() != tfvars.resolve() and not force:
+        typer.confirm(
+            f"Switching saved init from {old.tfvars} → {tfvars}. Continue?",
+            abort=True,
+        )
+    commands.do_init(cfg, tfvars=tfvars, extra=ctx.args)
 
 
 @app.command("plan", context_settings=PASSTHROUGH_CTX, help="Run `terraform plan` against the initialized project.")
@@ -145,6 +188,22 @@ def state_mv(
     destination: Annotated[str, typer.Argument(help="Destination resource address")],
 ) -> None:
     commands.do_state_mv(_config(ctx), source=source, destination=destination, extra=ctx.args)
+
+
+@app.command("last", help="Print the last terraform invocation recorded by tfp (argv + exit code).")
+def last(ctx: typer.Context) -> None:
+    try:
+        payload = self_commands.do_last_invocation(_config(ctx))
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"timestamp = {payload.get('timestamp', '(unknown)')}")
+    exit_code = payload.get("exit_code")
+    typer.echo(f"exit_code = {exit_code if exit_code is not None else '(unknown, e.g. exec passthrough)'}")
+    argv = payload.get("argv") or []
+    import shlex
+
+    typer.echo(f"argv      = {' '.join(shlex.quote(a) for a in argv)}")
 
 
 @app.command("status", help="Print a one-line summary of the current init state.")
@@ -238,28 +297,78 @@ def self_doctor(ctx: typer.Context) -> None:
         raise typer.Exit(code=1)
 
 
+@self_app.command(
+    "trace",
+    help="Print the argv `tfp <subcommand>` would build, without invoking anything.",
+)
+def self_trace(
+    ctx: typer.Context,
+    subcommand: Annotated[
+        str,
+        typer.Argument(help="One of: init, plan, apply, refresh, destroy, output."),
+    ],
+    targets: TargetsOption = None,
+    replaces: ReplacesOption = None,
+) -> None:
+    import shlex
+
+    try:
+        argv = self_commands.do_self_trace(
+            _config(ctx),
+            subcommand=subcommand,
+            targets=targets,
+            replaces=replaces,
+        )
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(" ".join(shlex.quote(a) for a in argv))
+
+
 @self_banner_app.command("check", help="Parse and validate a tfvars banner without running terraform.")
 def self_banner_check(
     ctx: typer.Context,
     tfvars: Annotated[
         pathlib.Path,
-        typer.Argument(exists=True, file_okay=True, dir_okay=False, readable=True),
+        typer.Argument(
+            exists=True,
+            file_okay=True,
+            dir_okay=False,
+            readable=True,
+            shell_complete=_complete_tfvars,
+        ),
     ],
 ) -> None:
     summary = self_commands.do_self_banner_check(_config(ctx), tfvars=tfvars)
     typer.echo(json.dumps(summary, indent=2, sort_keys=True))
 
 
-@self_lock_app.command("status", help="Show the Azure blob-lease state of the remote tfstate.")
+@self_app.command("snapshot", help="Pull the remote tfstate to a local file via `terraform state pull`.")
+def self_snapshot(
+    ctx: typer.Context,
+    dest: Annotated[
+        pathlib.Path | None,
+        typer.Option("--dest", help="Output path. Defaults to <tmp_dir>/snapshot-<UTC-timestamp>.tfstate."),
+    ] = None,
+) -> None:
+    try:
+        written = self_commands.do_self_snapshot(_config(ctx), dest=dest)
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Wrote snapshot to {written}")
+
+
+@self_lock_app.command("status", help="Show the remote-state lock state (azurerm or s3+dynamodb).")
 def self_lock_status(ctx: typer.Context) -> None:
     try:
         status = self_commands.do_self_lock_status(_config(ctx))
     except self_commands.SelfCommandError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+    typer.echo(f"backend        = {status.backend}")
     typer.echo(f"locked         = {status.locked}")
-    typer.echo(f"lease_state    = {status.lease_state}")
-    typer.echo(f"lease_duration = {status.lease_duration or '(n/a)'}")
+    typer.echo(f"detail         = {status.detail}")
     if status.lock_id:
         typer.echo(f"lock_id        = {status.lock_id}")
         typer.echo(f"lock_who       = {status.lock_who or '(unknown)'}")
@@ -272,23 +381,36 @@ def self_lock_status(ctx: typer.Context) -> None:
 
 @self_lock_app.command(
     "break",
-    help="Break the Azure blob lease on the remote tfstate. Use after a hard kill that left the state locked.",
+    help=(
+        "Release the remote-state lock. Polite by default (terraform force-unlock); "
+        "pass --blunt to skip terraform and break the lease at the backend level."
+    ),
 )
 def self_lock_break(
     ctx: typer.Context,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
+    blunt: Annotated[
+        bool,
+        typer.Option(
+            "--blunt",
+            help="Skip the polite `terraform force-unlock` path; break the lease directly.",
+        ),
+    ] = False,
 ) -> None:
     if not yes:
         typer.confirm(
-            "Break the remote-state lease? This may corrupt state if terraform is still running.",
+            "Release the remote-state lock? Only do this if terraform is no longer running.",
             abort=True,
         )
     try:
-        self_commands.do_self_lock_break(_config(ctx))
+        result = self_commands.do_self_lock_break(_config(ctx), blunt=blunt)
     except self_commands.SelfCommandError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
-    typer.echo("Lease broken.")
+    if result.method == "force-unlock":
+        typer.echo(f"Released via terraform force-unlock (lock_id={result.lock_id}).")
+    else:
+        typer.echo(f"Broke the {result.backend} lock at the backend level.")
 
 
 # ---- Top-level dispatcher -----------------------------------------------------
@@ -329,7 +451,14 @@ def _split_passthrough(argv: list[str]) -> tuple[bool, list[str]]:
 def main() -> None:
     """Entry point: handle global flags, route, and translate errors to exit codes."""
     args, verbose, dry_run = _strip_global_flags(sys.argv[1:])
-    terraform.set_runtime_options(dry_run=dry_run, verbose=verbose)
+
+    # Best-effort: hand terraform.run a path for `tfp last` recording.
+    last_path: pathlib.Path | None = None
+    try:
+        last_path = Config.discover().tmp_dir / "last.json"
+    except Exception:  # noqa: BLE001 — config not present yet (e.g., `tfp self init`)
+        pass
+    terraform.set_runtime_options(dry_run=dry_run, verbose=verbose, last_invocation_path=last_path)
 
     try:
         is_passthrough, forwarded = _split_passthrough(args)
@@ -351,6 +480,9 @@ def main() -> None:
         typer.echo(str(exc), err=True)
         sys.exit(1)
     except commands.StaleTfplanError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except LockBusyError as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)
     except ConfigError as exc:

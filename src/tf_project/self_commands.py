@@ -2,9 +2,6 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
-import contextlib
 import dataclasses
 import json
 import pathlib
@@ -13,7 +10,7 @@ import subprocess
 import tomllib
 from typing import Any, NamedTuple
 
-from tf_project import banner
+from tf_project import banner, lock
 from tf_project.config import (
     CONFIG_FILE_NAME,
     CONFIG_TABLE,
@@ -227,32 +224,127 @@ def do_self_banner_check(config: Config, *, tfvars: pathlib.Path) -> dict[str, A
     return banner.render_summary(info, tfvars=tfvars.resolve(), config=config)
 
 
-# ---- Azure remote-state lock helpers -------------------------------------------
+# ---- `tfp self trace` ---------------------------------------------------------
+
+_TRACE_PLACEHOLDER = "<DECRYPTED_TFVARS>"
+
+
+def do_self_trace(
+    config: Config,
+    *,
+    subcommand: str,
+    targets: list[str] | None = None,
+    replaces: list[str] | None = None,
+    extra: list[str] | None = None,
+) -> list[str]:
+    """Return the argv `tfp <subcommand>` would build, without invoking anything.
+
+    The decrypted-tfvars path is rendered as `<DECRYPTED_TFVARS>` since op
+    inject isn't actually run.
+    """
+    from tf_project import commands  # late import to avoid circular
+
+    state = MyState.load(config)
+    if state is None:
+        raise SelfCommandError("Not initialized. Run `tfp init <tfvars>` first.")
+
+    builders = {
+        "init": lambda: commands.build_init_argv(config, state=state, extra=extra),
+        "plan": lambda: commands.build_plan_argv(
+            config,
+            state=state,
+            var_file=_TRACE_PLACEHOLDER,
+            targets=targets,
+            replaces=replaces,
+            extra=extra,
+        ),
+        "apply": lambda: commands.build_apply_argv(config, state=state, var_file=_TRACE_PLACEHOLDER, extra=extra),
+        "refresh": lambda: commands.build_refresh_argv(
+            config, state=state, var_file=_TRACE_PLACEHOLDER, targets=targets, extra=extra
+        ),
+        "destroy": lambda: commands.build_destroy_argv(
+            config, state=state, var_file=_TRACE_PLACEHOLDER, targets=targets, extra=extra
+        ),
+        "output": lambda: commands.build_output_argv(config, state=state, extra=extra),
+    }
+    if subcommand not in builders:
+        raise SelfCommandError(f"Unknown subcommand {subcommand!r}. Choose from: {', '.join(sorted(builders))}.")
+    return builders[subcommand]()
+
+
+# ---- `tfp last` (last terraform invocation) -----------------------------------
+
+
+def last_invocation_path(config: Config) -> pathlib.Path:
+    return config.tmp_dir / "last.json"
+
+
+def do_last_invocation(config: Config) -> dict[str, Any]:
+    path = last_invocation_path(config)
+    if not path.exists():
+        raise SelfCommandError(f"No prior invocation recorded at {path}.")
+    return json.loads(path.read_text())
+
+
+# ---- `tfp self snapshot` ------------------------------------------------------
+
+
+def do_self_snapshot(
+    config: Config,
+    *,
+    dest: pathlib.Path | None = None,
+) -> pathlib.Path:
+    """Pull the current remote tfstate to a local file via `terraform state pull`."""
+    import datetime
+
+    from tf_project import terraform as terraform_mod
+
+    state = _require_state_or_error(config)
+    if dest is None:
+        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        dest = config.tmp_dir / f"snapshot-{ts}.tfstate"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        result = subprocess.run(  # noqa: S603 — explicit invocation
+            [
+                config.terraform_binary,
+                f"-chdir={state.source_root}",
+                "state",
+                "pull",
+            ],
+            capture_output=True,
+            check=True,
+            env=terraform_mod.merged_env(state.environ),
+        )
+    except FileNotFoundError as exc:
+        raise SelfCommandError(f"{config.terraform_binary}: command not found") from exc
+    except subprocess.CalledProcessError as exc:
+        detail = (exc.stderr.decode("utf-8", "replace") or "").strip() or f"exit {exc.returncode}"
+        raise SelfCommandError(f"terraform state pull failed: {detail}") from exc
+    dest.write_bytes(result.stdout)
+    return dest
+
+
+# ---- Remote-state lock helpers ------------------------------------------------
 
 
 class LockStatus(NamedTuple):
+    """Backend-agnostic lock report surfaced to the CLI."""
+
+    backend: str  # "azurerm" | "s3"
     locked: bool
-    lease_state: str  # available | leased | expired | breaking | broken | unknown
-    lease_duration: str | None  # "infinite" | "fixed" | None
-    # The following are populated from the blob's `terraformlockid` metadata
-    # (base64-encoded JSON written by the azurerm backend). All `None` if the
-    # metadata is missing or unparseable.
+    detail: str  # backend-specific one-line summary
     lock_id: str | None = None
     lock_who: str | None = None
     lock_operation: str | None = None
     lock_created: str | None = None
 
 
-def _decode_lock_info(value: str | None) -> dict[str, Any] | None:
-    """Decode the terraformlockid blob-metadata value (base64-encoded JSON)."""
-    if not value:
-        return None
-    with contextlib.suppress(binascii.Error, ValueError, json.JSONDecodeError):
-        decoded = base64.b64decode(value.encode("ascii"), validate=True).decode("utf-8")
-        payload = json.loads(decoded)
-        if isinstance(payload, dict):
-            return payload
-    return None
+@dataclasses.dataclass(frozen=True, slots=True)
+class BreakResult:
+    method: str  # "force-unlock" | "lease-break"
+    backend: str
+    lock_id: str | None = None
 
 
 def _require_state_or_error(config: Config) -> MyState:
@@ -262,116 +354,88 @@ def _require_state_or_error(config: Config) -> MyState:
     return state
 
 
-def _azure_blob_args(state: MyState) -> list[str]:
-    """Build the common `az storage blob` argv tail from the saved init state."""
-    bc = state.backend_config
-    account = bc.get("storage_account_name")
-    container = bc.get("container_name")
-    key = bc.get("key")
-    if not (account and container and key):
-        missing = [
-            name
-            for name, value in (
-                ("storage_account_name", account),
-                ("container_name", container),
-                ("key", key),
-            )
-            if not value
-        ]
-        raise SelfCommandError(
-            f"Azure backend metadata missing from saved state: {', '.join(missing)}. "
-            "Set them under [tf_project.backend_config] (or via banner.backend_config) and re-run `tfp init`."
-        )
-    args = [
-        "--account-name",
-        account,
-        "--container-name",
-        container,
-        "--blob-name",
-        key,
-    ]
-    if rg := bc.get("resource_group_name"):
-        args.extend(["--resource-group", rg])
-    if subscription := state.environ.get("ARM_SUBSCRIPTION_ID"):
-        args.extend(["--subscription", subscription])
-    return args
-
-
-def _run_az(args: list[str], *, capture: bool = True) -> str:
-    """Shell out to `az`, raising SelfCommandError with a clean message on failure."""
+def _select_provider(state: MyState) -> lock.LockProvider:
     try:
-        result = subprocess.run(  # noqa: S603,S607 — explicit invocation, args validated by callers
-            ["az", *args],
-            capture_output=capture,
-            text=True,
-            check=True,
-        )
-    except FileNotFoundError as exc:
-        raise SelfCommandError(
-            "`az` (Azure CLI) not found on PATH. "
-            "Install it from https://learn.microsoft.com/cli/azure/install-azure-cli "
-            "or break the lease manually in the Azure portal."
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        detail = (exc.stderr or "").strip() or f"exit code {exc.returncode}"
-        raise SelfCommandError(f"az failed: {detail}") from exc
-    return result.stdout if capture else ""
+        return lock.select_provider(state)
+    except lock.LockProviderError as exc:
+        raise SelfCommandError(str(exc)) from exc
 
 
 def do_self_lock_status(config: Config) -> LockStatus:
-    """Query the Azure blob lease + lock metadata for the current tfstate.
-
-    Returns lease info (status / state / duration) plus the terraform lock
-    info (ID / who / operation / created) which the azurerm backend writes
-    to the blob's `terraformlockid` metadata as base64-encoded JSON.
-    """
+    """Backend-agnostic lock status: dispatches to the right provider."""
     state = _require_state_or_error(config)
-    out = _run_az(
-        [
-            "storage",
-            "blob",
-            "show",
-            *_azure_blob_args(state),
-            "-o",
-            "json",
-        ]
-    )
-    data = json.loads(out or "{}") or {}
-    lease = (data.get("properties") or {}).get("lease") or {}
-    metadata = data.get("metadata") or {}
-    # Metadata keys are case-insensitive in Azure but az preserves whatever
-    # case terraform wrote. Look for the canonical key and a lower-cased one.
-    lock_b64 = metadata.get("terraformlockid") or metadata.get("Terraformlockid")
-    info = _decode_lock_info(lock_b64) or {}
+    provider = _select_provider(state)
+    try:
+        report = provider.status()
+    except lock.LockProviderError as exc:
+        raise SelfCommandError(str(exc)) from exc
+    info = report.info
     return LockStatus(
-        locked=(lease.get("status") == "locked"),
-        lease_state=lease.get("state") or "unknown",
-        lease_duration=lease.get("duration"),
-        lock_id=info.get("ID"),
-        lock_who=info.get("Who"),
-        lock_operation=info.get("Operation"),
-        lock_created=info.get("Created"),
+        backend=report.backend,
+        locked=report.locked,
+        detail=report.detail,
+        lock_id=info.id,
+        lock_who=info.who,
+        lock_operation=info.operation,
+        lock_created=info.created,
     )
 
 
-def do_self_lock_break(config: Config) -> None:
-    """Break the Azure blob lease on the current tfstate.
+def do_self_lock_break(config: Config, *, blunt: bool = False) -> BreakResult:
+    """Release the remote-state lock.
 
-    Does not require the terraform lock ID — operates at the blob-lease level
-    so it succeeds even after a hard kill while terraform was holding the
-    lease.
+    Default (polite) path: discover the lock ID and run `terraform force-unlock
+    <ID>` so terraform itself releases the lease and clears its metadata.
+
+    Fallback (blunt) path: break the lease at the backend level (azurerm)
+    or delete the DynamoDB lock item (s3). Triggered when the polite path
+    can't run (no ID recoverable, or terraform itself fails), or when
+    `blunt=True` is passed explicitly.
     """
+    from tf_project import terraform as terraform_mod
+
     state = _require_state_or_error(config)
-    _run_az(
-        ["storage", "blob", "lease", "break", *_azure_blob_args(state)],
-        capture=True,
-    )
+    provider = _select_provider(state)
+
+    if not blunt:
+        try:
+            report = provider.status()
+            if report.info.id:
+                try:
+                    terraform_mod.run(
+                        [
+                            config.terraform_binary,
+                            f"-chdir={state.source_root}",
+                            "force-unlock",
+                            "-force",
+                            report.info.id,
+                        ],
+                        env=terraform_mod.merged_env(state.environ),
+                    )
+                except terraform_mod.TerraformExit:
+                    pass  # fall through to blunt break
+                else:
+                    return BreakResult(
+                        method="force-unlock",
+                        backend=provider.backend,
+                        lock_id=report.info.id,
+                    )
+        except lock.LockProviderError:
+            pass  # fall through to blunt break
+
+    try:
+        provider.break_lease()
+    except lock.LockProviderError as exc:
+        raise SelfCommandError(str(exc)) from exc
+    return BreakResult(method="lease-break", backend=provider.backend)
 
 
 __all__ = [
+    "BreakResult",
     "DoctorCheck",
     "LockStatus",
     "SelfCommandError",
+    "do_last_invocation",
     "do_self_banner_check",
     "do_self_config_path",
     "do_self_config_print",
@@ -379,6 +443,9 @@ __all__ = [
     "do_self_init",
     "do_self_lock_break",
     "do_self_lock_status",
+    "do_self_snapshot",
     "do_self_state_clear",
     "do_self_state_show",
+    "do_self_trace",
+    "last_invocation_path",
 ]

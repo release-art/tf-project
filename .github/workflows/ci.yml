@@ -55,6 +55,14 @@ jobs:
         with:
           scandir: ./bin
 
+      - name: Build sdist + wheel
+        run: pdm build
+
+      - name: Twine check (PyPI metadata + README rendering)
+        run: |
+          pdm self add twine
+          pdm run twine check --strict dist/*
+
   test:
     runs-on: ${{ matrix.os }}
     strategy:

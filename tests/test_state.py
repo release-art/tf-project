@@ -39,6 +39,30 @@ def test_decrypted_tfvars_noop(config: Config, tfvars: pathlib.Path) -> None:
         assert p == tfvars
 
 
+def test_decrypted_tfvars_shredded_on_normal_exit(
+    config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The decrypted-tfvars temp file must be removed (not just emptied) by the
+    time the context closes — even on the happy path."""
+    state = _make_state(tfvars)
+    captured: dict[str, pathlib.Path] = {}
+
+    def fake_check_call(cmd: list[str]) -> int:
+        out_path = pathlib.Path(cmd[-1])
+        out_path.write_text("decrypted secret payload")
+        captured["out"] = out_path
+        return 0
+
+    monkeypatch.setattr("tf_project.secrets.subprocess.check_call", fake_check_call)
+    provider = CommandProvider(("echo", "{in}", "{out}"))
+    with state.decrypted_tfvars(provider) as decrypted:
+        assert decrypted.exists()
+        assert decrypted.read_text() == "decrypted secret payload"
+    # Immediately after the context exits, the file must be gone.
+    assert "out" in captured
+    assert not captured["out"].exists()
+
+
 def test_save_creates_lock_file(config: Config, tfvars: pathlib.Path) -> None:
     state = _make_state(tfvars)
     state.save(config)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -10,6 +11,25 @@ from collections.abc import Iterator
 from typing import Protocol
 
 from tf_project.config import SecretsConfig
+
+
+def _shred(path: pathlib.Path) -> None:
+    """Best-effort secure delete: overwrite the file with zeros, then unlink.
+
+    Filesystem semantics limit what "secure" means here — on copy-on-write
+    filesystems (btrfs/zfs/APFS) the original blocks may persist. On ext4
+    and tmpfs the bytes are overwritten in place. The unlink at the end is
+    the authoritative cleanup; the overwrite is defence in depth.
+    """
+    with contextlib.suppress(OSError):
+        if path.is_file():
+            size = path.stat().st_size
+            with path.open("r+b") as fh:
+                fh.write(b"\x00" * size)
+                fh.flush()
+                os.fsync(fh.fileno())
+    with contextlib.suppress(FileNotFoundError):
+        path.unlink()
 
 
 class SecretsProvider(Protocol):
@@ -37,15 +57,19 @@ class CommandProvider:
     def materialize(self, src: pathlib.Path) -> Iterator[pathlib.Path]:
         if not src.is_file():
             raise FileNotFoundError(f"tfvars file not found: {src}")
-        with tempfile.NamedTemporaryFile("w", suffix=".tfvars", delete=False) as fout:
-            out_path = pathlib.Path(fout.name)
-        try:
+        # Use a temporary *directory* and put the output file inside it.
+        # We must not pre-create the file: `op inject --out-file <path>`
+        # prompts "overwrite it? [Y/n]" if the path already exists.
+        with tempfile.TemporaryDirectory(prefix="tfp-secrets-") as tmpdir:
+            out_path = pathlib.Path(tmpdir) / f"{src.stem}.decrypted.tfvars"
             rendered = [arg.format(**{"in": str(src), "out": str(out_path)}) for arg in self._command]
             subprocess.check_call(rendered)
-            yield out_path
-        finally:
-            with contextlib.suppress(FileNotFoundError):
-                out_path.unlink()
+            try:
+                yield out_path
+            finally:
+                # Explicitly shred the decrypted contents before the
+                # tmpdir cleanup runs — the file holds plaintext secrets.
+                _shred(out_path)
 
 
 def provider_from_config(cfg: SecretsConfig) -> SecretsProvider:

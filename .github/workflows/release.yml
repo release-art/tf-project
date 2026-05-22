@@ -7,7 +7,7 @@
 #   3. Signs both artifacts with Sigstore (transparency-logged, keyless).
 #   4. Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
 #   5. Creates a GitHub Release with changelog notes and the signed
-#      artifacts (.whl + .tar.gz + .sigstore bundles) attached.
+#      artifacts (.whl + .tar.gz + .sigstore.json bundles) attached.
 #
 # No code-side version bump — the next release version is whatever you
 # tag next. `pyproject.toml`'s `[tool.pdm.version] source = "scm"` derives
@@ -59,13 +59,19 @@ jobs:
             ./dist/*.whl
             ./dist/*.tar.gz
 
+      - name: Stash Sigstore bundles outside dist/
+        # `pypa/gh-action-pypi-publish` uploads everything in `dist/` and
+        # rejects `.sigstore.json` as an "unknown distribution format". Move
+        # the bundles to a sibling directory before publishing; the GitHub
+        # Release step picks them up from there.
+        run: |
+          mkdir -p signatures
+          mv dist/*.sigstore.json signatures/
+
       - name: Publish to Test PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           repository-url: https://test.pypi.org/legacy/
-          # The action re-signs internally; the explicit Sigstore step
-          # above remains the source of truth for the .sigstore bundles
-          # attached to the GitHub Release.
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -91,5 +97,5 @@ jobs:
           files: |
             dist/*.whl
             dist/*.tar.gz
-            dist/*.sigstore
+            signatures/*.sigstore.json
           fail_on_unmatched_files: true

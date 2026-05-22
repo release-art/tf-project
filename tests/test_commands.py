@@ -420,6 +420,43 @@ def test_passthrough_honours_slot_flag(
     assert isinstance(env, dict) and env["ARM_SUBSCRIPTION_ID"] == "abc"
 
 
+def test_passthrough_raises_when_active_slot_has_no_state(
+    config: Config,
+    tfvars: pathlib.Path,
+    run_calls: list[dict[str, object]],
+) -> None:
+    """`-s dev` for a never-`tfp use`'d slot must refuse, not silently lose -chdir."""
+    with pytest.raises(commands.StateNotInitializedError):
+        commands.do_passthrough(config, ["validate"], slot="dev")
+    assert run_calls == []
+
+
+def test_apply_skips_banner_drift_when_banner_missing(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state: Callable[..., MyState],
+    run_calls: list[dict[str, object]],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """When the banner can no longer be resolved, apply warns rather than silently
+    passing the drift check (which would be a tautology against synthesised state)."""
+    from tf_project.state import save_state
+
+    state = save_dev_state()
+    commands.do_plan(config)  # writes tfplan meta
+    config.tfplan_file_for("dev").write_bytes(b"plan")
+    # Move the tfvars out of tfvars_dir so `list_slots` no longer resolves
+    # it, but keep its content reachable so the apply path can read it and
+    # the inputs-sha check still passes.
+    moved = config.project_root / "elsewhere.tfvars"
+    moved.write_bytes(tfvars.read_bytes())
+    tfvars.unlink()
+    save_state(state.model_copy(update={"tfvars": moved}), config)
+    commands.do_apply(config)
+    err = capsys.readouterr().err
+    assert "banner" in err and "skip" in err.lower()
+
+
 def test_passthrough_uses_exec(monkeypatch: pytest.MonkeyPatch, config: Config) -> None:
     exec_calls: list[list[str]] = []
     run_calls: list[list[str]] = []

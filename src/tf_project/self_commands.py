@@ -306,17 +306,20 @@ def do_self_trace(
         )
 
     name = _resolve_slot_name(config, slot=slot)
-    state = load_state(config, name)
-    if state is None:
-        raise SelfCommandError(f"No state for slot {name!r}. Run `tfp use {name}` first.")
 
-    # `use` traces an init against the *current* banner, so resolve fresh.
+    # `use` traces an init from the current banner — it doesn't read saved
+    # state, so don't require it. Other subcommands need state because their
+    # argv depends on saved tfvars / source_root / etc.
     if subcommand == "use":
         try:
             resolved = slots_mod.resolve_slot(name, config=config)
         except slots_mod.SlotError as exc:
             raise SelfCommandError(str(exc)) from exc
         return commands.build_init_argv(config, resolved=resolved, extra=extra)
+
+    state = load_state(config, name)
+    if state is None:
+        raise SelfCommandError(f"No state for slot {name!r}. Run `tfp use {name}` first.")
 
     var_file = _TRACE_PLACEHOLDER
     match subcommand:
@@ -504,30 +507,42 @@ def do_self_lock_break(config: Config, *, slot: str | None = None, blunt: bool =
     provider = _select_provider(state)
 
     if not blunt:
+        # Polite path: try terraform force-unlock first if we can discover a
+        # lock ID. If status itself fails (e.g. CLI auth blip), fall through
+        # to the blunt break — the user asked for the lock to go away.
         try:
             report = provider.status()
-            if report.info.id:
-                try:
-                    terraform_mod.run(
-                        [
-                            config.terraform_binary,
-                            f"-chdir={state.source_root}",
-                            "force-unlock",
-                            "-force",
-                            report.info.id,
-                        ],
-                        env=terraform_mod.env_for_slot(config, state),
-                    )
-                except terraform_mod.TerraformExit:
-                    pass
-                else:
-                    return BreakResult(
-                        method="force-unlock",
-                        backend=provider.backend,
-                        lock_id=report.info.id,
-                    )
         except lock_mod.LockProviderError:
-            pass
+            report = None
+
+        if report is not None:
+            if report.info.id is None:
+                # No lock to break. The user asked politely; don't escalate
+                # to a backend-level lease break behind their back.
+                raise SelfCommandError(
+                    f"No lock to break on the {provider.backend} backend. "
+                    "Pass --blunt only if you know a stale lease needs releasing."
+                )
+            try:
+                terraform_mod.run(
+                    [
+                        config.terraform_binary,
+                        f"-chdir={state.source_root}",
+                        "force-unlock",
+                        "-force",
+                        report.info.id,
+                    ],
+                    env=terraform_mod.env_for_slot(config, state),
+                )
+            except terraform_mod.TerraformExit:
+                # terraform itself failed — fall through to blunt break.
+                pass
+            else:
+                return BreakResult(
+                    method="force-unlock",
+                    backend=provider.backend,
+                    lock_id=report.info.id,
+                )
 
     try:
         provider.break_lease()

@@ -541,7 +541,13 @@ def do_apply(
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
         with _provider(config).materialize(state.tfvars) as decrypted:
             if not force:
-                _check_tfplan_fresh(config, state=state, resolved=resolved, decrypted=decrypted)
+                _check_tfplan_fresh(
+                    config,
+                    state=state,
+                    resolved=resolved,
+                    decrypted=decrypted,
+                    banner_present=banner_present,
+                )
             terraform.run(
                 build_apply_argv(config, state=state, var_file=str(decrypted), extra=extra),
                 env=_env_for(config, state),
@@ -656,12 +662,22 @@ def do_passthrough(
     Uses `os.execvpe` so signals and exit code are fully native — no Python
     in the loop. Returns only in dry-run mode (or in tests, where
     `exec_passthrough` is mocked).
+
+    Slot resolution:
+      - No active slot at all → run terraform with neither `-chdir` nor
+        slot env (e.g. `tfp version`, `tfp self init`-like cases).
+      - Active slot resolves but has no saved state (e.g. `-s prod` for a
+        never-`tfp use`'d slot) → refuse with StateNotInitializedError.
+        Silently dropping `-chdir` here would misroute commands.
+      - Active slot + saved state → normal path with `-chdir` and slot env.
     """
     active = slots_mod.resolve_active(config, flag=slot)
-    state = load_state(config, active.name) if active is not None else None
     cmd: list[str] = [config.terraform_binary]
     env: dict[str, str] | None = None
-    if state is not None:
+    if active is not None:
+        # Use the same helper as the wrapped commands so the error message
+        # distinguishes "no such slot" from "slot exists, never inited".
+        state = _require_slot_state(config, active.name)
         cmd.append(f"-chdir={state.source_root}")
         env = _env_for(config, state)
     cmd.extend(args)

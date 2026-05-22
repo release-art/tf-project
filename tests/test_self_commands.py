@@ -190,6 +190,17 @@ def _fake_az_run(stdout: str) -> object:
     return R()
 
 
+def test_self_trace_use_does_not_require_saved_state(config: Config, tfvars: pathlib.Path) -> None:
+    """`tfp self trace use` should work before the slot has ever been init'd."""
+    from tf_project.state import write_active
+
+    # Slot is known via the banner but has never been `tfp use`'d → no state.json.
+    write_active(config, "dev")
+    argv = self_commands.do_self_trace(config, subcommand="use", slot="dev")
+    assert "init" in argv
+    assert "-reconfigure" in argv
+
+
 def test_self_lock_status_parses_az_output(
     config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -296,6 +307,25 @@ def test_self_lock_break_polite_path_uses_force_unlock(
     assert result.lock_id == "abc-id"
     assert tf_run_calls and "force-unlock" in tf_run_calls[0]
     assert "abc-id" in tf_run_calls[0]
+
+
+def test_self_lock_break_refuses_when_no_lock_present(
+    config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Polite break must NOT escalate to backend-level when there's nothing to break."""
+    _save_azure_state(config, tfvars)
+    blob_payload = json.dumps(
+        {
+            "properties": {"lease": {"status": "unlocked", "state": "available"}},
+            "metadata": {},  # no terraformlockid → no lock
+        }
+    )
+    monkeypatch.setattr(
+        "tf_project.lock.subprocess.run",
+        lambda argv, **kw: _fake_az_run(blob_payload),
+    )
+    with pytest.raises(self_commands.SelfCommandError, match="No lock to break"):
+        self_commands.do_self_lock_break(config)
 
 
 def test_self_lock_break_blunt_skips_force_unlock(

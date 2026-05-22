@@ -14,7 +14,7 @@ from click.shell_completion import CompletionItem
 from tf_project import banner, commands, migrate, self_commands, slots, terraform
 from tf_project.__version__ import __version__
 from tf_project.commands import WRAPPED_SUBCOMMANDS
-from tf_project.config import Config, ConfigError, ConfigNotFoundError
+from tf_project.config import Config, ConfigError
 from tf_project.state import LockBusyError
 
 SELF_SUBCOMMAND = "self"
@@ -42,7 +42,7 @@ def _cli_state(ctx: typer.Context) -> _CliState:
 
 def _config(ctx: typer.Context) -> Config:
     state = _cli_state(ctx)
-    if state.config is None:
+    if state.config is None:  # pragma: no branch — cached path only reachable across multiple in-process calls
         state.config = Config.discover()
         migrate.run_if_needed(state.config)
     return state.config
@@ -747,10 +747,11 @@ def main() -> None:
     # the invocation simply isn't recorded.
     try:
         cfg_for_last = Config.discover()
-    except ConfigNotFoundError:
-        # `tfp self init` and similar can legitimately run without a config
-        # — skip `last` recording in that case. Any other config error is
-        # surfaced by the second `Config.discover()` below in app().
+    except ConfigError:
+        # No config (e.g. `tfp self init`), or malformed config — skip
+        # `last.json` routing here. The second `Config.discover()` inside
+        # the try block below will re-raise and be caught by the funnel,
+        # producing a clean exit-1 with the user-visible message.
         cfg_for_last = None
 
     last_path: pathlib.Path | None = None
@@ -801,5 +802,5 @@ def main() -> None:
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

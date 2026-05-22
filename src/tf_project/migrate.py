@@ -105,7 +105,7 @@ def run_if_needed(config: Config) -> MigrationResult:
             environ=environ,
             backend_config=backend_config,
         )
-    except Exception as exc:  # noqa: BLE001 — surface any construction failure cleanly
+    except Exception as exc:  # noqa: BLE001 — surface any construction failure cleanly  # pragma: no cover — upstream guards make this defensive
         return _abort(config, legacy_state, f"could not construct MyState from legacy ({exc})")
     state.dump_file(config.state_file_for(slot_name))
 

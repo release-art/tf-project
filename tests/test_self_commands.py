@@ -190,6 +190,150 @@ def _fake_az_run(stdout: str) -> object:
     return R()
 
 
+@pytest.mark.parametrize(
+    "subcommand",
+    ["plan", "apply", "refresh", "destroy", "output", "import"],
+)
+def test_self_trace_arms(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
+    subcommand: str,
+) -> None:
+    """Every match arm in do_self_trace returns a valid argv with `terraform` first."""
+    save_dev_state()
+    argv = self_commands.do_self_trace(config, subcommand=subcommand)
+    assert argv[0] == config.terraform_binary
+
+
+def test_self_trace_requires_state_for_non_use_subcommands(
+    config: Config, tfvars: pathlib.Path
+) -> None:
+    """Subcommands other than `use` need saved state."""
+    from tf_project.state import write_active
+
+    write_active(config, "dev")
+    with pytest.raises(self_commands.SelfCommandError, match="No state"):
+        self_commands.do_self_trace(config, subcommand="plan")
+
+
+def test_self_trace_unknown_subcommand(config: Config) -> None:
+    with pytest.raises(self_commands.SelfCommandError, match="Unknown subcommand"):
+        self_commands.do_self_trace(config, subcommand="bogus")
+
+
+def test_self_trace_use_missing_banner(config: Config, tfvars: pathlib.Path) -> None:
+    """`trace use` surfaces SlotError when no slot resolves."""
+    from tf_project.state import write_active
+
+    write_active(config, "ghost")
+    with pytest.raises(self_commands.SelfCommandError):
+        self_commands.do_self_trace(config, subcommand="use", slot="ghost")
+
+
+def test_self_state_show_all(
+    config: Config, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+) -> None:
+    """`--all` shows a map of every banner-defined slot."""
+    save_dev_state()
+    out = self_commands.do_self_state_show(config, slot=None, all_slots=True)
+    payload = json.loads(out)
+    assert "dev" in payload
+    assert payload["dev"]["slot"] == "dev"
+
+
+def test_self_state_clear_all(
+    config: Config, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+) -> None:
+    save_dev_state()
+    removed = self_commands.do_self_state_clear(config, slot=None, all_slots=True)
+    assert config.state_file_for("dev") in removed
+    assert not config.state_file_for("dev").exists()
+
+
+def test_resolve_slot_name_no_active(config: Config) -> None:
+    """`_resolve_slot_name` adapter re-raises NoActiveSlotError as SelfCommandError."""
+    with pytest.raises(self_commands.SelfCommandError, match="No active slot"):
+        self_commands._resolve_slot_name(config, slot=None)
+
+
+def test_require_state_or_error_adapter(config: Config, tfvars: pathlib.Path) -> None:
+    """`_require_state_or_error` re-raises StateNotInitializedError as SelfCommandError."""
+    with pytest.raises(self_commands.SelfCommandError):
+        self_commands._require_state_or_error(config, "dev")
+
+
+def test_self_snapshot_writes_to_default_dest(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`do_self_snapshot` writes the stdout of `terraform state pull` to dest."""
+
+    save_dev_state()
+
+    class R:
+        stdout = b"snapshot-bytes"
+        stderr = b""
+        returncode = 0
+
+    monkeypatch.setattr("tf_project.self_commands.subprocess.run", lambda *a, **kw: R())
+    dest = self_commands.do_self_snapshot(config)
+    assert dest.read_bytes() == b"snapshot-bytes"
+    assert dest.name.startswith("snapshot-") and dest.name.endswith(".tfstate")
+
+
+def test_self_snapshot_terraform_missing(
+    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+) -> None:
+    save_dev_state()
+
+    def boom(*a: object, **kw: object) -> object:
+        raise FileNotFoundError
+
+    monkeypatch.setattr("tf_project.self_commands.subprocess.run", boom)
+    with pytest.raises(self_commands.SelfCommandError, match="not found"):
+        self_commands.do_self_snapshot(config)
+
+
+def test_self_snapshot_terraform_failure(
+    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+) -> None:
+    import subprocess
+
+    save_dev_state()
+
+    def boom(*a: object, **kw: object) -> object:
+        raise subprocess.CalledProcessError(returncode=1, cmd=a[0], output=b"", stderr=b"auth error\n")
+
+    monkeypatch.setattr("tf_project.self_commands.subprocess.run", boom)
+    with pytest.raises(self_commands.SelfCommandError, match="auth error"):
+        self_commands.do_self_snapshot(config)
+
+
+def test_self_providers_lock_default_platforms(
+    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+) -> None:
+    save_dev_state()
+    calls: list[list[str]] = []
+    monkeypatch.setattr("tf_project.terraform.run", lambda cmd, env=None: calls.append(cmd))
+    argv = self_commands.do_self_providers_lock(config)
+    assert any("-platform=linux_amd64" in a for a in argv)
+    assert any("-platform=darwin_arm64" in a for a in argv)
+    assert calls and calls[0] == argv
+
+
+def test_self_providers_lock_custom_platforms(
+    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+) -> None:
+    save_dev_state()
+    monkeypatch.setattr("tf_project.terraform.run", lambda cmd, env=None: None)
+    argv = self_commands.do_self_providers_lock(config, platforms=["linux_amd64"])
+    assert "-platform=linux_amd64" in argv
+    assert not any("darwin" in a for a in argv)
+
+
 def test_self_trace_use_does_not_require_saved_state(config: Config, tfvars: pathlib.Path) -> None:
     """`tfp self trace use` should work before the slot has ever been init'd."""
     from tf_project.state import write_active

@@ -111,7 +111,7 @@ class Config(BaseModel):
 
     @classmethod
     def _from_table(cls, table: dict[str, Any], *, project_root: pathlib.Path) -> "Config":
-        if not isinstance(table, dict):
+        if not isinstance(table, dict):  # pragma: no cover — defensive, tomllib already returns dicts for tables
             raise ConfigError("tf_project config table must be a TOML table")
 
         project_root = project_root.resolve()

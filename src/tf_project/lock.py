@@ -16,7 +16,7 @@ import contextlib
 import dataclasses
 import json
 import subprocess
-from typing import Any, Protocol
+from typing import Protocol
 
 from tf_project.models import MyState
 
@@ -272,19 +272,10 @@ def _run_cli(argv: list[str]) -> str:
             "aws": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
         }.get(cli_name, "")
         msg = f"`{cli_name}` not found on PATH."
-        if hint:
+        if hint:  # pragma: no branch — every caller passes "az" or "aws"
             msg += f" Install: {hint}"
         raise LockProviderError(msg) from exc
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr or "").strip() or f"exit code {exc.returncode}"
         raise LockProviderError(f"{argv[0]} failed: {detail}") from exc
     return result.stdout
-
-
-def _summarise_info(info: LockInfo) -> dict[str, Any]:
-    return {
-        "id": info.id,
-        "who": info.who,
-        "operation": info.operation,
-        "created": info.created,
-    }

@@ -22,15 +22,13 @@ def project_tree(tmp_path: pathlib.Path) -> pathlib.Path:
 
 @pytest.fixture
 def config(project_tree: pathlib.Path) -> Config:
-    root = project_tree
+    root = project_tree.resolve()
     return Config(
         project_root=root,
         terraform_dir=(root / "terraform").resolve(),
         tfvars_dir=(root / "tfvars").resolve(),
         tmp_dir=(root / "tmp").resolve(),
         state_key_prefix="terraform/azure/",
-        state_file=(root / "tmp" / "my_terraform_state.json").resolve(),
-        tfplan_file=(root / "tmp" / "my.tfplan").resolve(),
         terraform_binary="terraform",
         backend_config={},
         secrets=SecretsConfig(command=()),  # noop — don't shell out to `op` in tests

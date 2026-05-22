@@ -19,6 +19,7 @@ license = "MIT"
 
 dependencies = [
     "typer>=0.21.2",
+    "pydantic>=2.13.4",
 ]
 
 readme = "README.md"
@@ -123,6 +124,13 @@ line-ending = "lf"
 ]
 "src/tf_project/cli.py" = [
     "B008",  # typer.Option() as default arg
+    "C901",  # `main` is necessarily a long dispatch
+]
+"src/tf_project/models.py" = [
+    "T201",  # banner extras warning prints to stderr
+]
+"src/tf_project/migrate.py" = [
+    "T201",  # migration breadcrumb prints to stderr
 ]
 "src/tf_project/commands.py" = [
     "T201",  # print() — user-facing CLI output

@@ -6,6 +6,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added — slot model (BREAKING)
+- **Named slots replace the single-state model.** Each tfvars file is bound
+  to a slot whose name defaults to the filename stem and can be overridden
+  via a new banner field: `{"slot": "production"}`. State, tfplan, and
+  `.terraform/` are stored per-slot under `tmp/slots/<slot>/`, so flipping
+  between slots is now a pointer write — no `terraform init` when the slot
+  is already warm.
+- `tfp use <slot-or-path>` — sole verb for selecting a slot. Accepts a slot
+  name or a path to a tfvars file (paths are convenient with shell
+  completion). Runs `terraform init -reconfigure` only when the slot's
+  `.terraform/` is missing or the backend signature has changed.
+- `tfp ls` — list all slots derived from tfvars banners. Marks the active
+  slot, shows project + backend key + warm-since mtime. `--json` for
+  scripts. Orphans (slot dirs with no matching banner) are listed
+  separately.
+- `tfp rm <slot>` — delete a slot's on-disk directory. Refuses on the
+  active slot unless `--force`. Never touches the tfvars file.
+- Global `-s/--slot <name>` flag — operate against a specific slot for one
+  invocation, without rewriting the saved active.
+- `TFP_SLOT` env var — overrides the saved active for the current shell
+  (useful for parallel slots across terminals or in CI).
+- Banner `slot` field validated for uniqueness across `tfvars_dir/*.tfvars`
+  on every `tfp use` / `tfp ls`. Conflicts name both files and whether each
+  was explicit vs default.
+- `TF_DATA_DIR` is set per slot, so two slots that share a project keep
+  independent provider/module/backend bindings on disk.
+- Plugin cache shared across all slots via `TF_PLUGIN_CACHE_DIR`
+  (default `tmp/plugin-cache/`, configurable). Providers download once and
+  are linked into each slot's `.terraform/providers/` — first init for a
+  new slot is seconds, not minutes. `TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE=1`
+  is set automatically; pair with `tfp self providers lock` to populate
+  multi-platform hashes for CI.
+- `tfp self providers lock [-p <platform>]` — wraps `terraform providers lock`
+  across `linux/darwin × amd64/arm64` by default.
+- `tfp self state show --all` / `tfp self state clear --all` — operate on
+  every slot at once.
+- `tfp self doctor` adds slot-uniqueness and orphan checks.
+- Apply-safety hashes now also pin `project`, `state_key`, full
+  `backend_config`, and banner `env` into `tfplan.meta.json`. Banner edits
+  that change the apply target invalidate the plan even when the tfvars
+  body and `.tf` source are unchanged.
+- Versioned state files: every persisted JSON carries `schema_version`
+  (currently 1). `tfp` refuses to load files written by a newer version
+  and walks older versions through a per-model migrator.
+- One-shot legacy migration: `tmp/my_terraform_state.json` is promoted to
+  `tmp/slots/<slot>/state.json` on first run, with a breadcrumb left at
+  `tmp/MIGRATED-<UTC-timestamp>.txt`.
+
+### Changed — slot model (BREAKING)
+- `tfp init <tfvars>` is **removed**. Use `tfp use <slot-or-path>` instead.
+- Banner `env` is no longer merged across `tfp use` invocations — the
+  banner is the single source of truth at the moment of switching.
+- `tfp last` / `tfp status` / `tfp self state show` / `tfp self trace` /
+  `tfp self snapshot` / `tfp self lock` are all slot-scoped. They consult
+  the active slot (or `-s/TFP_SLOT`) and operate within `slots/<slot>/`.
+- All file I/O goes through pydantic models. Persisted models use
+  `extra="forbid"`; the banner uses `extra="allow"` and logs unknown fields
+  to stderr (forward-compatible but visible). Unknown fields in
+  `tf_project.toml` now fail loudly.
+- All runtime `pathlib.Path` values are absolute. Paths in TOML are
+  resolved against `project_root` at load time; business logic does not
+  re-resolve.
+
 ### Added
 - `tfp state` subcommand group — all eight terraform state subcommands
   (`list`, `show`, `mv`, `rm`, `pull`, `push`, `replace-provider`,

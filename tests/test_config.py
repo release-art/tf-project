@@ -31,8 +31,8 @@ def test_loads_from_tf_project_toml(tmp_path: pathlib.Path) -> None:
     assert cfg.tfvars_dir == (tmp_path / "vars").resolve()
     assert cfg.tmp_dir == (tmp_path / "build").resolve()
     assert cfg.state_key_prefix == "tf/azure/"
-    assert cfg.state_file == (tmp_path / "build" / "my_terraform_state.json").resolve()
-    assert cfg.tfplan_file == (tmp_path / "build" / "my.tfplan").resolve()
+    assert cfg.slots_dir == (tmp_path / "build" / "slots").resolve()
+    assert cfg.active_file == (tmp_path / "build" / "active").resolve()
     assert cfg.secrets.command[0] == "op"
 
 
@@ -165,7 +165,7 @@ def test_backend_config_bad_type_raises(tmp_path: pathlib.Path) -> None:
         bad = 123
         """,
     )
-    with pytest.raises(ConfigError, match="backend_config"):
+    with pytest.raises(ConfigError):
         Config.discover(tmp_path)
 
 
@@ -182,3 +182,43 @@ def test_bad_secrets_command_raises(tmp_path: pathlib.Path) -> None:
     )
     with pytest.raises(ConfigError):
         Config.discover(tmp_path)
+
+
+def test_unknown_top_level_field_rejected(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+        misspelled_field = "oops"
+        """,
+    )
+    with pytest.raises(ConfigError):
+        Config.discover(tmp_path)
+
+
+def test_plugin_cache_dir_default(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(tmp_path, "[tf_project]\nterraform_dir = 'infra'\n")
+    cfg = Config.discover(tmp_path)
+    assert cfg.default_plugin_cache_dir == (tmp_path / "tmp" / "plugin-cache").resolve()
+
+
+def test_plugin_cache_dir_explicit(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+        plugin_cache_dir = "cache/tf-plugins"
+        """,
+    )
+    cfg = Config.discover(tmp_path)
+    assert cfg.default_plugin_cache_dir == (tmp_path / "cache" / "tf-plugins").resolve()
+
+
+def test_slot_paths(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(tmp_path, "[tf_project]\nterraform_dir = 'infra'\n")
+    cfg = Config.discover(tmp_path)
+    assert cfg.state_file_for("dev") == (tmp_path / "tmp" / "slots" / "dev" / "state.json").resolve()
+    assert cfg.tfplan_file_for("dev") == (tmp_path / "tmp" / "slots" / "dev" / "tfplan").resolve()
+    assert cfg.data_dir_for("dev") == (tmp_path / "tmp" / "slots" / "dev" / ".terraform").resolve()

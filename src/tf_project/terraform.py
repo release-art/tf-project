@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import dataclasses
 import datetime
-import json
 import logging
 import os
 import pathlib
@@ -13,14 +12,14 @@ import subprocess
 import sys
 from collections.abc import Iterable
 
-# Re-exports for backward compatibility — banner parsing now lives in
+# Re-exports for backward compatibility — banner parsing lives in
 # `tf_project.banner` but external callers (and existing tests) import it
 # from here.
 from tf_project.banner import (  # noqa: F401
     BannerError,
     ProjectInfoNotFoundError,
-    find_project_info,
 )
+from tf_project.models import LastInvocation
 
 log = logging.getLogger("tf_project.terraform")
 
@@ -69,13 +68,12 @@ def _record_invocation(cmd: list[str], *, exit_code: int | None) -> None:
     if path is None:
         return
     try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        payload = {
-            "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
-            "argv": cmd,
-            "exit_code": exit_code,
-        }
-        path.write_text(json.dumps(payload, indent=2, sort_keys=True))
+        last = LastInvocation(
+            timestamp=datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
+            argv=cmd,
+            exit_code=exit_code,
+        )
+        last.dump_file(path)
     except OSError:
         # Recording is best-effort; don't crash the real command for it.
         pass
@@ -106,7 +104,6 @@ def run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
             rc = proc.wait()
             break
         except KeyboardInterrupt:
-            # terraform got SIGINT too; let it finish cleanly.
             continue
     _record_invocation(cmd, exit_code=rc)
     if rc != 0:
@@ -122,8 +119,6 @@ def exec_passthrough(cmd: list[str], *, env: dict[str, str] | None = None) -> No
     _announce(cmd)
     if _options.dry_run:
         return
-    # Record before exec, since exec replaces the process and we won't get
-    # to write afterwards. Exit code is unknown for passthrough.
     _record_invocation(cmd, exit_code=None)
     try:
         if env is None:
@@ -143,7 +138,27 @@ def replace_args(replaces: Iterable[str] | None) -> list[str]:
     return [f"-replace={r}" for r in (replaces or [])]
 
 
-def merged_env(extra: dict[str, str]) -> dict[str, str]:
+def merged_env(
+    extra: dict[str, str],
+    *,
+    data_dir: pathlib.Path | None = None,
+    plugin_cache_dir: pathlib.Path | None = None,
+) -> dict[str, str]:
+    """Build the env for a terraform spawn.
+
+    Layered on top of `os.environ` (in order):
+      - `extra` (slot's banner-declared env)
+      - `TF_DATA_DIR` if `data_dir` is given (absolute, see config layer)
+      - `TF_PLUGIN_CACHE_DIR` + `TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE`
+        if `plugin_cache_dir` is given.
+
+    All path values must be absolute by the time they reach this function.
+    """
     out = os.environ.copy()
     out.update(extra)
+    if data_dir is not None:
+        out["TF_DATA_DIR"] = str(data_dir)
+    if plugin_cache_dir is not None:
+        out["TF_PLUGIN_CACHE_DIR"] = str(plugin_cache_dir)
+        out["TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE"] = "1"
     return out

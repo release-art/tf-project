@@ -2,7 +2,28 @@
 # PEP 621 project metadata
 # See https://www.python.org/dev/peps/pep-0621/
 name = "tf-project"
-description = "Custom Terraform project wrapper used to provision infrastructure."
+description = "Terraform / OpenTofu wrapper with named per-tfvars slots, cached `.terraform/`, 1Password secret injection, and apply-safety guards."
+keywords = [
+    "terraform",
+    "opentofu",
+    "tofu",
+    "infrastructure-as-code",
+    "iac",
+    "devops",
+    "cli",
+    "wrapper",
+    "tfvars",
+    "multi-environment",
+    "workspaces",
+    "1password",
+    "op-cli",
+    "secrets",
+    "sops",
+    "azurerm",
+    "s3-backend",
+    "terraform-state",
+    "sigstore",
+]
 
 authors = [
     {name = "Ilja Orlovs", email = "ilja@release.art"},
@@ -26,14 +47,20 @@ readme = "README.md"
 
 classifiers = [
     "Development Status :: 4 - Beta",
+    "Environment :: Console",
     "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX",
+    "Operating System :: MacOS",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Installation/Setup",
     "Topic :: System :: Systems Administration",
+    "Topic :: Utilities",
     "Typing :: Typed",
 ]
 
@@ -44,6 +71,10 @@ tfp = "tf_project.cli:main"
 [project.urls]
 Homepage = "https://github.com/release-art/tf-project"
 Repository = "https://github.com/release-art/tf-project"
+Documentation = "https://github.com/release-art/tf-project#readme"
+Changelog = "https://github.com/release-art/tf-project/blob/main/CHANGELOG.md"
+Issues = "https://github.com/release-art/tf-project/issues"
+Releases = "https://github.com/release-art/tf-project/releases"
 
 [build-system]
 requires = ["pdm-backend"]

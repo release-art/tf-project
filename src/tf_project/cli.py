@@ -470,7 +470,7 @@ app.add_typer(self_app, name="self")
 self_config_app = typer.Typer(name="config", help="Inspect the active configuration.", no_args_is_help=True)
 self_app.add_typer(self_config_app, name="config")
 
-self_state_app = typer.Typer(name="state", help="Inspect or reset the saved init state.", no_args_is_help=True)
+self_state_app = typer.Typer(name="state", help="Inspect or reset saved per-slot state.", no_args_is_help=True)
 self_app.add_typer(self_state_app, name="state")
 
 self_banner_app = typer.Typer(name="banner", help="Inspect tfvars banners.", no_args_is_help=True)
@@ -510,7 +510,7 @@ def self_config_path() -> None:
     typer.echo(str(self_commands.do_self_config_path(pathlib.Path.cwd())))
 
 
-@self_state_app.command("show", help="Print the saved init state as JSON.")
+@self_state_app.command("show", help="Print the saved slot state as JSON.")
 def self_state_show(
     ctx: typer.Context,
     all_slots: Annotated[bool, typer.Option("--all", help="Show state for every slot.")] = False,
@@ -522,7 +522,7 @@ def self_state_show(
         raise typer.Exit(code=1) from exc
 
 
-@self_state_app.command("clear", help="Delete the saved init state file.")
+@self_state_app.command("clear", help="Delete the saved slot state file (active slot, or all with --all).")
 def self_state_clear(
     ctx: typer.Context,
     all_slots: Annotated[bool, typer.Option("--all", help="Clear state for every slot.")] = False,
@@ -741,8 +741,10 @@ def main() -> None:
     """Entry point: handle global flags, route, and translate errors to exit codes."""
     args, verbose, dry_run = _strip_global_flags(sys.argv[1:])
 
-    # We pre-load config to point `tfp last` at a default location. The
-    # slot-scoped `last.json` is set later, when a slot is in hand.
+    # Best-effort: if there's already an active slot, point `tfp last`
+    # recording at that slot's `last.json`. With no active slot (e.g. fresh
+    # checkout, or pre-`tfp use` invocation), leave `last_path` unset so
+    # the invocation simply isn't recorded.
     try:
         cfg_for_last = Config.discover()
     except ConfigNotFoundError:

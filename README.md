@@ -272,7 +272,9 @@ pdm run pytest -m integration   # smoke tests (need `terraform` on PATH)
 ## Release
 
 Releases are **tag-driven**. The wheel's version comes from the git tag,
-not a code edit — there is no `__version__.py` to bump.
+not a code edit — `src/tf_project/__version__.py` exists but reads the
+installed distribution's metadata at runtime; there is nothing in code to
+bump.
 
 1. Move the `## [Unreleased]` block in `CHANGELOG.md` under a new
    `## [X.Y.Z] — YYYY-MM-DD` heading. Commit to `main`.

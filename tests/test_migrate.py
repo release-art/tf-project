@@ -67,3 +67,30 @@ def test_legacy_state_unreadable(config: Config) -> None:
     result = migrate.run_if_needed(config)
     assert result.migrated is False
     assert not (config.tmp_dir / migrate.LEGACY_STATE_FILENAME).exists()
+
+
+def test_legacy_state_refuses_existing_slot_dir(config: Config, tfvars: pathlib.Path) -> None:
+    """If a partial earlier upgrade left content in slots/<slot>/, don't clobber."""
+    _write_legacy(config, tfvars)
+    slot_dir = config.slot_dir_for("dev")
+    slot_dir.mkdir(parents=True, exist_ok=True)
+    (slot_dir / "stray.txt").write_text("from an earlier partial upgrade")
+    result = migrate.run_if_needed(config)
+    assert result.migrated is False
+    assert result.note is not None and "non-empty" in result.note
+
+
+def test_legacy_state_non_string_environ_caught(config: Config, tfvars: pathlib.Path) -> None:
+    legacy = {
+        "tfvars": str(tfvars),
+        "source_root": str(config.terraform_dir / "demo"),
+        "tfplan_location": str(config.tmp_dir / "my.tfplan"),
+        "environ": {"X": 1},  # int instead of str — would have crashed before
+        "backend_config": {},
+    }
+    import json as _json
+
+    (config.tmp_dir / migrate.LEGACY_STATE_FILENAME).write_text(_json.dumps(legacy))
+    result = migrate.run_if_needed(config)
+    assert result.migrated is False
+    assert result.note is not None and "environ" in result.note

@@ -68,17 +68,45 @@ def run_if_needed(config: Config) -> MigrationResult:
     source_root = (config.terraform_dir / banner.project).resolve()
     backend_config = banner_mod.resolve_backend_config(banner, tfvars=tfvars_path, config=config)
 
+    # Refuse if a slot dir already exists with content — a partial earlier
+    # upgrade or manual setup. Don't clobber.
     slot_dir = config.slot_dir_for(slot_name)
+    if slot_dir.exists() and any(slot_dir.iterdir()):
+        return _abort(
+            config,
+            legacy_state,
+            f"slot dir {slot_dir} already exists and is non-empty; "
+            "refusing to overwrite. Remove it manually then re-run.",
+        )
     slot_dir.mkdir(parents=True, exist_ok=True)
 
-    state = MyState(
-        slot=slot_name,
-        tfvars=tfvars_path.resolve(),
-        source_root=source_root,
-        tfplan_location=config.tfplan_file_for(slot_name),
-        environ=dict(raw.get("environ") or {}),
-        backend_config=backend_config,
-    )
+    # Sanitise the legacy environ — older versions may have stashed
+    # non-string values that pydantic's `dict[str, str]` will reject.
+    raw_environ = raw.get("environ") or {}
+    if not isinstance(raw_environ, dict):
+        return _abort(config, legacy_state, f"legacy `environ` is not an object ({type(raw_environ).__name__})")
+    environ: dict[str, str] = {}
+    for k, v in raw_environ.items():
+        if not isinstance(k, str) or not isinstance(v, str):
+            return _abort(
+                config,
+                legacy_state,
+                f"legacy `environ` contains non-string entry {k!r}={v!r}",
+            )
+        environ[k] = v
+
+    try:
+        state = MyState(
+            slot=slot_name,
+            project=banner.project,
+            tfvars=tfvars_path.resolve(),
+            source_root=source_root,
+            tfplan_location=config.tfplan_file_for(slot_name),
+            environ=environ,
+            backend_config=backend_config,
+        )
+    except Exception as exc:  # noqa: BLE001 — surface any construction failure cleanly
+        return _abort(config, legacy_state, f"could not construct MyState from legacy ({exc})")
     state.dump_file(config.state_file_for(slot_name))
 
     # Move legacy tfplan + meta into the slot if they exist alongside.

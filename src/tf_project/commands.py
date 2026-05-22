@@ -77,6 +77,13 @@ def _require_active(config: Config, *, flag: str | None) -> ActiveSlot:
 def _require_slot_state(config: Config, slot_name: str) -> MyState:
     state = load_state(config, slot_name)
     if state is None:
+        # Distinguish "slot doesn't exist" from "slot exists but never inited"
+        # so users get a precise error instead of a "no state" message that
+        # could mean either.
+        try:
+            slots_mod.assert_slot_exists(config, slot_name)
+        except slots_mod.SlotError as exc:
+            raise StateNotInitializedError(str(exc)) from exc
         raise StateNotInitializedError(
             f"No state for slot {slot_name!r} at {config.state_file_for(slot_name)}. "
             f"Run `tfp use {slot_name}` first."
@@ -100,11 +107,13 @@ def _resolve_active_slot(config: Config, *, flag: str | None) -> tuple[ResolvedS
     try:
         resolved = slots_mod.resolve_slot(active.name, config=config)
     except slots_mod.SlotError:
+        # Banner gone — synthesise from saved state. `project` lives on
+        # MyState specifically so this fallback stays accurate.
         resolved = ResolvedSlot(
             name=state.slot,
             name_is_explicit=False,
             tfvars=state.tfvars,
-            project=state.tfvars.stem,  # best effort
+            project=state.project,
             source_root=state.source_root,
             env=dict(state.environ),
             backend_config=dict(state.backend_config),
@@ -125,7 +134,7 @@ def _env_for(config: Config, state: MyState) -> dict[str, str]:
     return terraform.merged_env(
         state.environ,
         data_dir=config.data_dir_for(state.slot),
-        plugin_cache_dir=config.default_plugin_cache_dir,
+        plugin_cache_dir=config.effective_plugin_cache_dir,
     )
 
 
@@ -397,9 +406,11 @@ def cmd_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> 
         print(f"resolved {arg} → slot {resolved.name!r}", file=sys.stderr)
 
     decision = _decide_init(config, resolved, config.terraform_binary)
+    first_init = not resolved.slot_dir.exists()
     resolved.slot_dir.mkdir(parents=True, exist_ok=True)
-    if config.plugin_cache_enabled:
-        config.default_plugin_cache_dir.mkdir(parents=True, exist_ok=True)
+    plugin_cache_dir = config.effective_plugin_cache_dir
+    if plugin_cache_dir is not None:
+        plugin_cache_dir.mkdir(parents=True, exist_ok=True)
 
     if decision.needs_init:
         print(f"==== PROJECT: {resolved.project} (slot {resolved.name!r}, {decision.reason}) ====")
@@ -409,11 +420,23 @@ def cmd_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> 
                 env=terraform.merged_env(
                     resolved.env,
                     data_dir=resolved.data_dir,
-                    plugin_cache_dir=config.default_plugin_cache_dir,
+                    plugin_cache_dir=plugin_cache_dir,
                 ),
             )
         except terraform.TerraformExit:
-            shutil.rmtree(resolved.slot_dir, ignore_errors=True)
+            # On first-init failure, wipe the partially-created slot dir so
+            # a retry starts clean. On re-init failure (slot already had a
+            # previously-good state), keep the existing state.json /
+            # backend.hash intact — the user can still operate on the
+            # last-known-good init while diagnosing.
+            if first_init:
+                shutil.rmtree(resolved.slot_dir, ignore_errors=True)
+            else:
+                print(
+                    f"init failed; slot {resolved.name!r} retains its previous "
+                    "saved state — fix the cause and re-run `tfp use`.",
+                    file=sys.stderr,
+                )
             raise
         config.backend_hash_for(resolved.name).write_text(
             _backend_signature(resolved, config.terraform_binary) + "\n"
@@ -421,6 +444,7 @@ def cmd_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> 
 
     state = MyState(
         slot=resolved.name,
+        project=resolved.project,
         tfvars=resolved.tfvars,
         source_root=resolved.source_root,
         tfplan_location=config.tfplan_file_for(resolved.name),

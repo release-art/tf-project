@@ -200,7 +200,7 @@ def test_unknown_top_level_field_rejected(tmp_path: pathlib.Path) -> None:
 def test_plugin_cache_dir_default(tmp_path: pathlib.Path) -> None:
     _write_tf_project_toml(tmp_path, "[tf_project]\nterraform_dir = 'infra'\n")
     cfg = Config.discover(tmp_path)
-    assert cfg.default_plugin_cache_dir == (tmp_path / "tmp" / "plugin-cache").resolve()
+    assert cfg.effective_plugin_cache_dir == (tmp_path / "tmp" / "plugin-cache").resolve()
 
 
 def test_plugin_cache_dir_explicit(tmp_path: pathlib.Path) -> None:
@@ -213,7 +213,21 @@ def test_plugin_cache_dir_explicit(tmp_path: pathlib.Path) -> None:
         """,
     )
     cfg = Config.discover(tmp_path)
-    assert cfg.default_plugin_cache_dir == (tmp_path / "cache" / "tf-plugins").resolve()
+    assert cfg.effective_plugin_cache_dir == (tmp_path / "cache" / "tf-plugins").resolve()
+
+
+def test_plugin_cache_dir_explicit_empty_disables(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+        plugin_cache_dir = ""
+        """,
+    )
+    cfg = Config.discover(tmp_path)
+    assert cfg.effective_plugin_cache_dir is None
+    assert cfg.plugin_cache_disabled is True
 
 
 def test_slot_paths(tmp_path: pathlib.Path) -> None:

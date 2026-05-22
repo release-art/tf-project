@@ -12,6 +12,7 @@ strictness, no schema versioning.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 from typing import Any, ClassVar, Literal, Self
@@ -79,9 +80,16 @@ class VersionedModel(PersistedModel):
         return cls.model_validate(raw)
 
     def dump_file(self, path: pathlib.Path) -> None:
-        """Atomically write the model to `path` as pretty-printed JSON."""
+        """Atomically write the model to `path` as pretty-printed JSON.
+
+        Writes to a sibling temp file in the same directory, then `os.replace`s
+        over `path` — guarantees readers either see the old content or the
+        new, never a half-written file (even on SIGINT mid-write).
+        """
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(self.model_dump_json(indent=4) + "\n")
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(self.model_dump_json(indent=4) + "\n")
+        tmp.replace(path)
 
     @classmethod
     def migrate(cls, raw: dict[str, Any], *, from_version: int) -> dict[str, Any]:
@@ -138,6 +146,7 @@ class MyState(VersionedModel):
     schema_version: int = 1
 
     slot: str = Field(min_length=1)
+    project: str = Field(min_length=1)
     tfvars: pathlib.Path
     source_root: pathlib.Path
     tfplan_location: pathlib.Path

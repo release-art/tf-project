@@ -18,6 +18,7 @@ def _payload(**overrides: object) -> dict[str, object]:
     base = {
         "schema_version": 1,
         "slot": "dev",
+        "project": "demo",
         "tfvars": "/tmp/dev.tfvars",
         "source_root": "/tmp/src",
         "tfplan_location": "/tmp/dev/tfplan",

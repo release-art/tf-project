@@ -9,6 +9,7 @@ imported it from here.
 from __future__ import annotations
 
 import contextlib
+import os
 import pathlib
 import sys
 from collections.abc import Iterator
@@ -95,12 +96,19 @@ def read_active(config: Config) -> str | None:
 
 
 def write_active(config: Config, slot: str) -> None:
-    """Atomically set the active slot to `slot`."""
+    """Atomically set the active slot to `slot`.
+
+    Writes to a sibling temp file then `os.replace`s, so a concurrent reader
+    in another shell never observes a half-written pointer (advisory flock
+    alone doesn't protect non-cooperating readers).
+    """
     path = config.active_file
     lock_path = path.with_suffix(path.suffix + ".lock")
     with _exclusive_lock(lock_path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(slot + "\n")
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
+        tmp.write_text(slot + "\n")
+        tmp.replace(path)
 
 
 def clear_active(config: Config) -> None:

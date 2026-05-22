@@ -64,6 +64,7 @@ class Config(BaseModel):
     backend_config: dict[str, str] = Field(default_factory=dict)
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
     plugin_cache_dir: pathlib.Path | None = None
+    plugin_cache_disabled: bool = False
 
     # ---- Discovery -----------------------------------------------------------
 
@@ -126,6 +127,7 @@ class Config(BaseModel):
             raw = table["plugin_cache_dir"]
             if isinstance(raw, str) and raw == "":
                 payload["plugin_cache_dir"] = None
+                payload["plugin_cache_disabled"] = True
             else:
                 payload["plugin_cache_dir"] = _abs_from_value(raw, base=project_root, key="plugin_cache_dir")
 
@@ -145,18 +147,15 @@ class Config(BaseModel):
         return self.tmp_dir / "active"
 
     @property
-    def default_plugin_cache_dir(self) -> pathlib.Path:
-        """Where the plugin cache lives. `plugin_cache_dir = ""` disables; see `plugin_cache_enabled`."""
-        return self.plugin_cache_dir if self.plugin_cache_dir is not None else self.tmp_dir / "plugin-cache"
+    def effective_plugin_cache_dir(self) -> pathlib.Path | None:
+        """Resolved plugin cache dir, or None if explicitly disabled.
 
-    @property
-    def plugin_cache_enabled(self) -> bool:
-        # Pydantic stores the explicit `""` opt-out as None via the table
-        # parser above; but None also means "not set, use default". We
-        # distinguish via a separate marker file convention: the table
-        # parser stores `None` only for the opt-out case if `plugin_cache_dir`
-        # was present in the table. Practically we always enable.
-        return True
+        Set `plugin_cache_dir = ""` in TOML to disable. Unset → default at
+        `<tmp_dir>/plugin-cache`.
+        """
+        if self.plugin_cache_disabled:
+            return None
+        return self.plugin_cache_dir if self.plugin_cache_dir is not None else self.tmp_dir / "plugin-cache"
 
     def slot_dir_for(self, slot: str) -> pathlib.Path:
         return self.slots_dir / slot

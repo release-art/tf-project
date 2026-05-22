@@ -26,6 +26,7 @@ def run_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
 def _save_dev_state(config: Config, *, tfvars: pathlib.Path) -> MyState:
     state = MyState(
         slot="dev",
+        project="demo",
         tfvars=tfvars,
         source_root=(config.terraform_dir / "demo").resolve(),
         tfplan_location=config.tfplan_file_for("dev"),
@@ -90,6 +91,28 @@ def test_cmd_use_init_failure_wipes_slot_dir(
     assert not config.slot_dir_for("dev").exists()
 
 
+def test_cmd_use_reinit_failure_preserves_prior_state(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Re-init failure must not wipe a previously-good state.json."""
+    from tf_project import terraform as terraform_mod
+
+    commands.cmd_use(config, arg="dev")
+    state_before = config.state_file_for("dev").read_text()
+    # Force re-init by deleting backend.hash so _decide_init returns True.
+    config.backend_hash_for("dev").unlink()
+
+    def boom(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
+        raise terraform_mod.TerraformExit(2)
+
+    monkeypatch.setattr("tf_project.commands.terraform.run", boom)
+    with pytest.raises(terraform_mod.TerraformExit):
+        commands.cmd_use(config, arg="dev")
+
+    assert config.slot_dir_for("dev").exists()
+    assert config.state_file_for("dev").read_text() == state_before
+
+
 def test_plan_targets_and_replaces(
     config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
 ) -> None:
@@ -106,7 +129,7 @@ def test_plan_targets_and_replaces(
     assert isinstance(env, dict)
     assert env["ARM_SUBSCRIPTION_ID"] == "abc"
     assert env["TF_DATA_DIR"] == str(config.data_dir_for("dev"))
-    assert env["TF_PLUGIN_CACHE_DIR"] == str(config.default_plugin_cache_dir)
+    assert env["TF_PLUGIN_CACHE_DIR"] == str(config.effective_plugin_cache_dir)
     assert env["TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE"] == "1"
 
 
@@ -409,6 +432,18 @@ def test_import_forwards_var_file_and_env(
 
 def test_import_is_wrapped_not_passthrough() -> None:
     assert "import" in commands.WRAPPED_SUBCOMMANDS
+
+
+def test_passthrough_honours_slot_flag(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    """do_passthrough with flag_active resolves env + -chdir from that slot."""
+    _save_dev_state(config, tfvars=tfvars)
+    commands.do_passthrough(config, ["validate"], flag_active="dev")
+    cmd = run_calls[0]["cmd"]
+    env = run_calls[0]["env"]
+    assert f"-chdir={config.terraform_dir / 'demo'}" in cmd
+    assert isinstance(env, dict) and env["ARM_SUBSCRIPTION_ID"] == "abc"
 
 
 def test_passthrough_uses_exec(monkeypatch: pytest.MonkeyPatch, config: Config) -> None:

@@ -195,7 +195,11 @@ def list_orphans(config: Config) -> list[OrphanSlot]:
 def resolve_active(config: Config, *, flag: str | None = None) -> ActiveSlot | None:
     """Resolve the active slot: -s flag > TFP_SLOT env > tmp/active file.
 
-    Returns None if none of the three sources yield a slot name.
+    Returns None if none of the three sources yield a slot name. A name
+    that doesn't correspond to any tfvars banner is *still* returned (so
+    `tfp use <new-slot>` can target a not-yet-resolvable slot via path),
+    but `assert_slot_exists` is the recommended caller-side check before
+    operating on a flag-provided slot.
     """
     if flag:
         return ActiveSlot(name=flag, source="flag")
@@ -206,6 +210,14 @@ def resolve_active(config: Config, *, flag: str | None = None) -> ActiveSlot | N
     if saved:
         return ActiveSlot(name=saved, source="file")
     return None
+
+
+def assert_slot_exists(config: Config, name: str) -> None:
+    """Raise `SlotError` if `name` is not defined by any tfvars banner."""
+    known = {s.name for s in list_slots(config)}
+    if name not in known:
+        available = ", ".join(sorted(known)) or "(none)"
+        raise SlotError(f"no tfvars defines slot {name!r}. Available: {available}")
 
 
 def _looks_like_path(arg: str) -> bool:
@@ -220,6 +232,7 @@ __all__ = [
     "ResolvedSlot",
     "SlotConflictError",
     "SlotError",
+    "assert_slot_exists",
     "banner_mod",
     "list_orphans",
     "list_slots",

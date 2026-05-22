@@ -244,7 +244,9 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
         "tmp_dir": str(config.tmp_dir),
         "slots_dir": str(config.slots_dir),
         "active_file": str(config.active_file),
-        "plugin_cache_dir": str(config.default_plugin_cache_dir),
+        "plugin_cache_dir": (
+            str(config.effective_plugin_cache_dir) if config.effective_plugin_cache_dir is not None else "(disabled)"
+        ),
         "state_key_prefix": config.state_key_prefix,
         "terraform_binary": config.terraform_binary,
         "backend_config": dict(config.backend_config),
@@ -368,7 +370,7 @@ def do_self_snapshot(
             env=terraform_mod.merged_env(
                 state.environ,
                 data_dir=config.data_dir_for(state.slot),
-                plugin_cache_dir=config.default_plugin_cache_dir,
+                plugin_cache_dir=config.effective_plugin_cache_dir,
             ),
         )
     except FileNotFoundError as exc:
@@ -416,7 +418,7 @@ def do_self_providers_lock(
         env=terraform_mod.merged_env(
             state.environ,
             data_dir=config.data_dir_for(state.slot),
-            plugin_cache_dir=config.default_plugin_cache_dir,
+            plugin_cache_dir=config.effective_plugin_cache_dir,
         ),
     )
     return argv
@@ -501,7 +503,7 @@ def do_self_lock_break(config: Config, *, slot: str | None = None, blunt: bool =
                         env=terraform_mod.merged_env(
                             state.environ,
                             data_dir=config.data_dir_for(state.slot),
-                            plugin_cache_dir=config.default_plugin_cache_dir,
+                            plugin_cache_dir=config.effective_plugin_cache_dir,
                         ),
                     )
                 except terraform_mod.TerraformExit:

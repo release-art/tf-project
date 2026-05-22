@@ -19,6 +19,7 @@ from tf_project.state import (
 def _make_state(tfvars: pathlib.Path) -> MyState:
     return MyState(
         slot="dev",
+        project="demo",
         tfvars=tfvars,
         source_root=pathlib.Path("/tmp/src"),
         tfplan_location=pathlib.Path("/tmp/my.tfplan"),

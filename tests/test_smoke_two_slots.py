@@ -80,7 +80,7 @@ def test_plugin_cache_populated(two_slot_config: Config) -> None:
     cfg = two_slot_config
     commands.cmd_use(cfg, arg="dev")
     # Plugin cache should contain at least one provider directory after init.
-    cache = cfg.default_plugin_cache_dir
+    cache = cfg.effective_plugin_cache_dir
     assert cache.is_dir()
     # `registry.terraform.io/hashicorp/null/<version>/<platform>/`
     matches = list(cache.rglob("terraform-provider-null*"))

@@ -88,6 +88,15 @@ def test_resolve_active_returns_none_when_unset(config: Config, monkeypatch: pyt
     assert slots.resolve_active(config, flag=None) is None
 
 
+def test_assert_slot_exists_passes_for_known(config: Config) -> None:
+    slots.assert_slot_exists(config, "dev")
+
+
+def test_assert_slot_exists_raises_for_unknown(config: Config) -> None:
+    with pytest.raises(slots.SlotError):
+        slots.assert_slot_exists(config, "ghost")
+
+
 def test_list_orphans(config: Config) -> None:
     # Create a slot dir with no matching banner.
     ghost = config.slot_dir_for("ghost")

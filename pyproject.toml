@@ -131,6 +131,7 @@ line-ending = "lf"
 ]
 "src/tf_project/migrate.py" = [
     "T201",  # migration breadcrumb prints to stderr
+    "C901",  # legacy migration is a linear flow of guard clauses
 ]
 "src/tf_project/commands.py" = [
     "T201",  # print() — user-facing CLI output

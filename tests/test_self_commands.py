@@ -152,6 +152,7 @@ def test_self_banner_check_raises_on_invalid(config: Config, tfvars: pathlib.Pat
 def _save_dev_state(config: Config, *, tfvars: pathlib.Path) -> None:
     state = MyState(
         slot="dev",
+        project="demo",
         tfvars=tfvars,
         source_root=(config.terraform_dir / "demo").resolve(),
         tfplan_location=config.tfplan_file_for("dev"),
@@ -179,6 +180,7 @@ def _save_azure_state(
         bc.update(extra_backend)
     state = MyState(
         slot="dev",
+        project="demo",
         tfvars=tfvars,
         source_root=(config.terraform_dir / "demo").resolve(),
         tfplan_location=config.tfplan_file_for("dev"),
@@ -370,6 +372,7 @@ def test_self_lock_requires_known_backend(
 ) -> None:
     state = MyState(
         slot="dev",
+        project="demo",
         tfvars=tfvars,
         source_root=(config.terraform_dir / "demo").resolve(),
         tfplan_location=config.tfplan_file_for("dev"),
@@ -425,6 +428,7 @@ def _save_s3_state(
         bc.update(extra_backend)
     state = MyState(
         slot="dev",
+        project="demo",
         tfvars=tfvars,
         source_root=(config.terraform_dir / "demo").resolve(),
         tfplan_location=config.tfplan_file_for("dev"),
@@ -486,6 +490,7 @@ def test_s3_lock_break_calls_delete_item(config: Config, tfvars: pathlib.Path, m
 def test_s3_without_dynamodb_table_rejected(config: Config, tfvars: pathlib.Path) -> None:
     state = MyState(
         slot="dev",
+        project="demo",
         tfvars=tfvars,
         source_root=(config.terraform_dir / "demo").resolve(),
         tfplan_location=config.tfplan_file_for("dev"),

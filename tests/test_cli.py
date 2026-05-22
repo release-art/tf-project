@@ -138,9 +138,23 @@ def test_cli_dispatches_use(
     ],
 )
 def test_split_passthrough(argv: list[str], expected_passthrough: bool, expected_args: list[str]) -> None:
-    is_passthrough, forwarded = _split_passthrough(argv)
+    is_passthrough, forwarded, _slot = _split_passthrough(argv)
     assert is_passthrough is expected_passthrough
     assert forwarded == expected_args
+
+
+def test_split_passthrough_extracts_slot_flag() -> None:
+    is_passthrough, forwarded, slot = _split_passthrough(["-s", "prod", "validate"])
+    assert is_passthrough is True
+    assert forwarded == ["validate"]
+    assert slot == "prod"
+
+
+def test_split_passthrough_extracts_slot_equals() -> None:
+    is_passthrough, forwarded, slot = _split_passthrough(["--slot=prod", "validate"])
+    assert is_passthrough is True
+    assert forwarded == ["validate"]
+    assert slot == "prod"
 
 
 @pytest.mark.parametrize(
@@ -188,6 +202,29 @@ def test_complete_tfvars_lists_banner_projects(project_tree: pathlib.Path, monke
     assert "tfvars/prod.tfvars" in values
     assert "project=demo" in (helps["tfvars/dev.tfvars"] or "")
     assert "project=prod-app" in (helps["tfvars/prod.tfvars"] or "")
+
+
+def test_ls_warns_on_slot_conflict(
+    runner: CliRunner, project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import json
+
+    (project_tree / "tf_project.toml").write_text(
+        "[tf_project]\n"
+        'terraform_dir = "terraform"\n'
+        'tfvars_dir = "tfvars"\n'
+        'tmp_dir = "tmp"\n\n'
+        "[tf_project.secrets]\n"
+        "command = []\n"
+    )
+    # Two tfvars claim the same slot name "dev".
+    (project_tree / "tfvars" / "dev-old.tfvars").write_text(
+        f'# {json.dumps({"header": "terraform", "project": "demo", "slot": "dev"})}\nfoo="bar"\n'
+    )
+    monkeypatch.chdir(project_tree)
+    result = runner.invoke(app, ["ls"])
+    # ls itself succeeds; conflict warning goes to stderr.
+    assert "warning" in result.output or "warning" in (result.stderr or "")
 
 
 def test_complete_slot_lists_slot_names(project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:

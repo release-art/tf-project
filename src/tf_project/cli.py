@@ -14,7 +14,7 @@ from click.shell_completion import CompletionItem
 from tf_project import banner, commands, migrate, self_commands, slots, terraform
 from tf_project.__version__ import __version__
 from tf_project.commands import WRAPPED_SUBCOMMANDS
-from tf_project.config import Config, ConfigError
+from tf_project.config import Config, ConfigError, ConfigNotFoundError
 from tf_project.state import LockBusyError
 
 SELF_SUBCOMMAND = "self"
@@ -179,6 +179,12 @@ def ls(
     cfg = _config(ctx)
     listing = commands.slot_listing(cfg, flag_active=_slot_flag(ctx))
     orphans = slots.list_orphans(cfg)
+    # `ls` is the diagnostic surface — surface duplicate banner slot names
+    # here rather than silently dropping the loser of `list_slots` ordering.
+    try:
+        slots.validate_unique(slots.list_slots(cfg))
+    except slots.SlotConflictError as exc:
+        typer.echo(f"warning: {exc}", err=True)
     if as_json:
         payload = {
             "slots": [s.model_dump(mode="json") for s in listing],
@@ -701,27 +707,34 @@ def _strip_global_flags(argv: list[str]) -> tuple[list[str], bool, bool]:
     return out, verbose, dry_run
 
 
-def _split_passthrough(argv: list[str]) -> tuple[bool, list[str]]:
-    """Decide whether to passthrough to `terraform` and, if so, what to forward.
+def _split_passthrough(argv: list[str]) -> tuple[bool, list[str], str | None]:
+    """Decide whether to passthrough to `terraform` and what to forward.
 
-    Skips `-s/--slot <value>` global flag while looking for the subcommand.
+    Returns ``(is_passthrough, forwarded_args, slot_flag)``. Pulls
+    ``-s/--slot <value>`` out of argv before scanning for the subcommand so
+    the passthrough sees clean terraform argv, and so the slot flag is
+    honoured by `do_passthrough` (env vars + -chdir come from the slot's
+    saved state).
     """
+    slot_flag: str | None = None
     i = 0
     while i < len(argv):
         arg = argv[i]
-        if arg in ("-s", "--slot"):
+        if arg in ("-s", "--slot") and i + 1 < len(argv):
+            slot_flag = argv[i + 1]
             i += 2
             continue
         if arg.startswith("--slot="):
+            slot_flag = arg.split("=", 1)[1]
             i += 1
             continue
         if arg.startswith("-"):
             i += 1
             continue
         if arg in WRAPPED_SUBCOMMANDS or arg == SELF_SUBCOMMAND:
-            return (False, [])
-        return (True, argv[i:])
-    return (False, [])
+            return (False, [], slot_flag)
+        return (True, argv[i:], slot_flag)
+    return (False, [], slot_flag)
 
 
 def main() -> None:
@@ -732,7 +745,10 @@ def main() -> None:
     # slot-scoped `last.json` is set later, when a slot is in hand.
     try:
         cfg_for_last = Config.discover()
-    except Exception:  # noqa: BLE001 — config not present yet (e.g., `tfp self init`)
+    except ConfigNotFoundError:
+        # `tfp self init` and similar can legitimately run without a config
+        # — skip `last` recording in that case. Any other config error is
+        # surfaced by the second `Config.discover()` below in app().
         cfg_for_last = None
 
     last_path: pathlib.Path | None = None
@@ -744,11 +760,11 @@ def main() -> None:
     terraform.set_runtime_options(dry_run=dry_run, verbose=verbose, last_invocation_path=last_path)
 
     try:
-        is_passthrough, forwarded = _split_passthrough(args)
+        is_passthrough, forwarded, passthrough_slot = _split_passthrough(args)
         if is_passthrough:
             cfg = Config.discover()
             migrate.run_if_needed(cfg)
-            commands.do_passthrough(cfg, forwarded)
+            commands.do_passthrough(cfg, forwarded, flag_active=passthrough_slot)
             return
         sys.argv = [sys.argv[0], *args]
         app()

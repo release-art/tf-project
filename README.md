@@ -1,8 +1,17 @@
 # tf-project
 
-A thin, opinionated Terraform-project wrapper. Provides a single `tf-project`
-(aka `tfp`) CLI built around **named slots**: each tfvars file binds to a
-slot, and switching between slots is a pointer write — not a re-`terraform init`.
+[![PyPI](https://img.shields.io/pypi/v/tf-project.svg)](https://pypi.org/project/tf-project/)
+[![Python](https://img.shields.io/pypi/pyversions/tf-project.svg)](https://pypi.org/project/tf-project/)
+[![License](https://img.shields.io/pypi/l/tf-project.svg)](https://github.com/release-art/tf-project/blob/main/LICENSE)
+
+A thin, opinionated **Terraform / OpenTofu** wrapper for multi-environment
+projects. Provides a single `tf-project` (aka `tfp`) CLI built around
+**named slots** — each tfvars file binds to a slot, and switching between
+slots is a pointer write, not a re-`terraform init`.
+
+If you maintain one tfvars per environment (`dev.tfvars`, `staging.tfvars`,
+`prod.tfvars`, …) and you're tired of re-initialising the backend every
+time you switch, this tool replaces that ritual with `tfp use dev`.
 
 - **Slots, not paths.** Banner-declared (or filename-derived) names refer to
   tfvars files. `tfp use dev` flips the active slot; `tfp plan` / `tfp apply`

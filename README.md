@@ -2,7 +2,7 @@
 
 [![PyPI](https://img.shields.io/pypi/v/tf-project.svg)](https://pypi.org/project/tf-project/)
 [![Python](https://img.shields.io/pypi/pyversions/tf-project.svg)](https://pypi.org/project/tf-project/)
-[![License](https://img.shields.io/pypi/l/tf-project.svg)](https://github.com/release-art/tf-project/blob/main/LICENSE)
+[![License](https://img.shields.io/github/license/release-art/tf-project.svg)](https://github.com/release-art/tf-project/blob/main/LICENSE)
 
 A thin, opinionated **Terraform / OpenTofu** wrapper for multi-environment
 projects. Provides a single `tf-project` (aka `tfp`) CLI built around

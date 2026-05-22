@@ -6,9 +6,13 @@ on:
   push:
     branches:
       - main
+    tags:
+      - 'v*.*.*'
   pull_request:
     branches:
       - main
+  # Reusable: release.yml calls this to gate publication on a green build.
+  workflow_call:
   workflow_dispatch: {}
 
 permissions:

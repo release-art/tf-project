@@ -19,6 +19,7 @@ license = "MIT"
 
 dependencies = [
     "typer>=0.21.2",
+    "pydantic>=2.13.4",
 ]
 
 readme = "README.md"
@@ -77,8 +78,13 @@ source-includes = [
 editable-backend = "path"
 
 [tool.pdm.version]
-source = "file"
-path = "src/tf_project/__version__.py"
+# Version is derived from the latest matching git tag at build time.
+# Release tags look like `v1.2.3`; the leading `v` is stripped for PEP 440.
+# Outside a tagged commit (CI on main, local dev), pdm-backend falls back
+# to `fallback_version` so the build still succeeds.
+source = "scm"
+tag_regex = '^v(?P<version>\d+\.\d+\.\d+.*)$'
+fallback_version = "0.0.0.dev0"
 
 [tool.pdm.scripts]
 tf-project = {call = "tf_project.cli:main"}
@@ -123,6 +129,17 @@ line-ending = "lf"
 ]
 "src/tf_project/cli.py" = [
     "B008",  # typer.Option() as default arg
+    "C901",  # `main` is necessarily a long dispatch
+]
+"src/tf_project/banner.py" = [
+    "T201",  # banner extras warning prints to stderr
+]
+"src/tf_project/migrate.py" = [
+    "T201",  # migration breadcrumb prints to stderr
+    "C901",  # legacy migration is a linear flow of guard clauses
+]
+"src/tf_project/self_commands.py" = [
+    "C901",  # do_self_trace's match statement reads as a flat dispatch table
 ]
 "src/tf_project/commands.py" = [
     "T201",  # print() — user-facing CLI output

@@ -3,7 +3,7 @@
 from tf_project.__version__ import __version__
 from tf_project.banner import BannerError, ProjectInfoNotFoundError
 from tf_project.config import Config, ConfigError, ConfigNotFoundError
-from tf_project.state import MyState
+from tf_project.models import MyState
 from tf_project.terraform import TerraformExit
 
 __all__ = [

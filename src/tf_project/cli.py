@@ -11,11 +11,11 @@ import click
 import typer
 from click.shell_completion import CompletionItem
 
-from tf_project import banner, commands, self_commands, terraform
+from tf_project import banner, commands, migrate, self_commands, slots, terraform
 from tf_project.__version__ import __version__
 from tf_project.commands import WRAPPED_SUBCOMMANDS
 from tf_project.config import Config, ConfigError
-from tf_project.state import LockBusyError, MyState
+from tf_project.state import LockBusyError
 
 SELF_SUBCOMMAND = "self"
 GLOBAL_FLAGS = {"--verbose", "--dry-run"}
@@ -25,28 +25,50 @@ PASSTHROUGH_CTX = {
     "ignore_unknown_options": True,
 }
 
+
+class _CliState:
+    """Holds parsed global flags between root callback and subcommands."""
+
+    def __init__(self) -> None:
+        self.config: Config | None = None
+        self.slot: str | None = None
+
+
+def _cli_state(ctx: typer.Context) -> _CliState:
+    if not isinstance(ctx.obj, _CliState):
+        ctx.obj = _CliState()
+    return ctx.obj
+
+
+def _config(ctx: typer.Context) -> Config:
+    state = _cli_state(ctx)
+    if state.config is None:  # pragma: no branch — cached path only reachable across multiple in-process calls
+        state.config = Config.discover()
+        migrate.run_if_needed(state.config)
+    return state.config
+
+
+def _slot_flag(ctx: typer.Context) -> str | None:
+    return _cli_state(ctx).slot
+
+
 app = typer.Typer(
     name="tf-project",
     help=(
         "Custom Terraform project wrapper. Unknown subcommands are forwarded "
         "to `terraform` verbatim. Global flags: --verbose (echo terraform "
-        "argv to stderr), --dry-run (print argv and skip execution)."
+        "argv to stderr), --dry-run (print argv and skip execution), "
+        "-s/--slot (operate against a specific slot for this invocation)."
     ),
     no_args_is_help=True,
 )
-
-
-def _config(ctx: typer.Context) -> Config:
-    if not isinstance(ctx.obj, Config):
-        ctx.obj = Config.discover()
-    return ctx.obj
 
 
 def _complete_tfvars(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
     """Tab-completion: list tfvars files under config.tfvars_dir, labelled by project."""
     try:
         cfg = Config.discover()
-    except Exception:  # noqa: BLE001 — no config yet → no completions
+    except Exception:  # noqa: BLE001
         return []
     out: list[CompletionItem] = []
     if not cfg.tfvars_dir.is_dir():
@@ -60,12 +82,30 @@ def _complete_tfvars(ctx: click.Context, param: click.Parameter, incomplete: str
         if not display.startswith(incomplete):
             continue
         try:
-            info = banner.find_project_info(path)
-            label = info.get("project") or "(no project)"
-        except (banner.ProjectInfoNotFoundError, OSError):
+            b = banner.find_banner(path)
+            label = b.project
+        except (banner.ProjectInfoNotFoundError, banner.BannerError, OSError):
             label = "(no banner)"
         out.append(CompletionItem(value=display, help=f"project={label}"))
     return out
+
+
+def _complete_slot(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+    """Tab-completion: slot names from the tfvars dir."""
+    try:
+        cfg = Config.discover()
+    except Exception:  # noqa: BLE001
+        return []
+    out: list[CompletionItem] = []
+    for slot in slots.list_slots(cfg):
+        if slot.name.startswith(incomplete):
+            out.append(CompletionItem(value=slot.name, help=f"project={slot.project}"))
+    return out
+
+
+def _complete_use_arg(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+    """Tab-completion for `tfp use`: slot names + tfvars paths."""
+    return _complete_slot(ctx, param, incomplete) + _complete_tfvars(ctx, param, incomplete)
 
 
 def _version_callback(value: bool) -> None:
@@ -77,74 +117,145 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def root(
     ctx: typer.Context,
+    slot_flag: Annotated[
+        str | None,
+        typer.Option(
+            "--slot",
+            "-s",
+            help="Operate against a specific slot for this invocation (does not change the saved active).",
+            shell_complete=_complete_slot,
+        ),
+    ] = None,
     version: Annotated[
         bool,
         typer.Option("--version", callback=_version_callback, is_eager=True, help="Show version and exit."),
     ] = False,
 ) -> None:
     """Custom Terraform project wrapper."""
+    _cli_state(ctx).slot = slot_flag
 
 
 TargetsOption = Annotated[
     list[str] | None,
-    typer.Option(
-        "--target",
-        "-t",
-        metavar="RESOURCE",
-        help="Limit operation to a specific resource address (repeatable).",
-    ),
+    typer.Option("--target", "-t", metavar="RESOURCE", help="Limit to a resource address (repeatable)."),
 ]
 ReplacesOption = Annotated[
     list[str] | None,
-    typer.Option(
-        "--replace",
-        "-r",
-        metavar="RESOURCE",
-        help="Force replacement of a specific resource address (repeatable).",
-    ),
+    typer.Option("--replace", "-r", metavar="RESOURCE", help="Force replacement of a resource (repeatable)."),
 ]
 
 
-@app.command("init", context_settings=PASSTHROUGH_CTX, help="Initialize Terraform backend for a given tfvars file.")
-def init(
+# ---- use / ls / rm ------------------------------------------------------------
+
+
+@app.command(
+    "use",
+    context_settings=PASSTHROUGH_CTX,
+    help="Switch to a slot. Argument is a slot name or a tfvars path.",
+)
+def use(
     ctx: typer.Context,
-    tfvars: Annotated[
-        pathlib.Path,
-        typer.Argument(
-            exists=True,
-            file_okay=True,
-            dir_okay=False,
-            readable=True,
-            shell_complete=_complete_tfvars,
-        ),
+    target: Annotated[
+        str,
+        typer.Argument(help="Slot name (banner `slot` field, or tfvars stem) or path to a tfvars file."),
     ],
-    force: Annotated[bool, typer.Option("--force", help="Skip the tfvars-switch confirmation.")] = False,
 ) -> None:
     cfg = _config(ctx)
-    old = MyState.load(cfg)
-    if old is not None and pathlib.Path(old.tfvars).resolve() != tfvars.resolve() and not force:
-        typer.confirm(
-            f"Switching saved init from {old.tfvars} → {tfvars}. Continue?",
-            abort=True,
-        )
-    commands.do_init(cfg, tfvars=tfvars, extra=ctx.args)
+    try:
+        commands.do_use(cfg, arg=target, extra=ctx.args)
+    except slots.SlotConflictError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    except slots.SlotError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
 
 
-@app.command("plan", context_settings=PASSTHROUGH_CTX, help="Run `terraform plan` against the initialized project.")
+@app.command("ls", help="List all slots derived from tfvars banners.")
+def ls(
+    ctx: typer.Context,
+    as_json: Annotated[bool, typer.Option("--json", help="Emit JSON instead of a table.")] = False,
+) -> None:
+    cfg = _config(ctx)
+    listing = commands.slot_listing(cfg, slot=_slot_flag(ctx))
+    orphans = slots.list_orphans(cfg)
+    # `ls` is the diagnostic surface — surface duplicate banner slot names
+    # here rather than silently dropping the loser of `list_slots` ordering.
+    try:
+        slots.validate_unique(slots.list_slots(cfg))
+    except slots.SlotConflictError as exc:
+        typer.echo(f"warning: {exc}", err=True)
+    if as_json:
+        payload = {
+            "slots": [s.model_dump(mode="json") for s in listing],
+            "orphans": [o.model_dump(mode="json") for o in orphans],
+        }
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+    if not listing:
+        typer.echo("(no slots found in tfvars_dir)")
+    else:
+        rows = [("", "SLOT", "PROJECT", "TFVARS", "BACKEND KEY", "WARM SINCE")]
+        for s in listing:
+            rows.append(
+                (
+                    "*" if s.is_active else " ",
+                    s.name,
+                    s.project,
+                    str(s.tfvars),
+                    s.backend_key or "-",
+                    s.warm_mtime or "-",
+                )
+            )
+        widths = [max(len(r[i]) for r in rows) for i in range(len(rows[0]))]
+        for r in rows:
+            typer.echo("  ".join(v.ljust(widths[i]) for i, v in enumerate(r)))
+    if orphans:
+        typer.echo("")
+        typer.echo("orphans (slot dirs with no matching banner):")
+        for o in orphans:
+            typer.echo(f"  {o.name}    {o.slot_dir}    (run `tfp rm {o.name}` to remove)")
+
+
+@app.command("rm", help="Remove a slot directory (does not touch the tfvars file).")
+def rm(
+    ctx: typer.Context,
+    slot: Annotated[str, typer.Argument(help="Slot name to remove.", shell_complete=_complete_slot)],
+    force: Annotated[bool, typer.Option("--force", help="Allow removing the active slot.")] = False,
+) -> None:
+    cfg = _config(ctx)
+    try:
+        removed = commands.do_rm(cfg, name=slot, force=force, slot=_slot_flag(ctx))
+    except (slots.SlotInUseError, slots.SlotNotFoundError) as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"removed {removed}")
+
+
+# ---- Wrapped terraform subcommands -------------------------------------------
+
+
+@app.command("plan", context_settings=PASSTHROUGH_CTX, help="Run `terraform plan` against the active slot.")
 def plan(
     ctx: typer.Context,
     targets: TargetsOption = None,
     replaces: ReplacesOption = None,
 ) -> None:
-    commands.do_plan(_config(ctx), targets=targets, replaces=replaces, extra=ctx.args)
+    commands.do_plan(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        targets=targets,
+        replaces=replaces,
+        extra=ctx.args,
+    )
 
 
 @app.command("apply", context_settings=PASSTHROUGH_CTX, help="Apply the saved tfplan.")
 def apply(
     ctx: typer.Context,
-    force: Annotated[bool, typer.Option("--force", help="Apply even if the tfvars changed since the plan.")] = False,
+    force: Annotated[bool, typer.Option("--force", help="Apply even if plan inputs changed.")] = False,
 ) -> None:
-    commands.do_apply(_config(ctx), force=force, extra=ctx.args)
+    commands.do_apply(_config(ctx), slot=_slot_flag(ctx), force=force, extra=ctx.args)
 
 
 @app.command(
@@ -152,19 +263,13 @@ def apply(
     context_settings=PASSTHROUGH_CTX,
     help="Apply directly (without a saved plan), optionally targeted.",
 )
-def refresh(
-    ctx: typer.Context,
-    targets: TargetsOption = None,
-) -> None:
-    commands.do_refresh(_config(ctx), targets=targets, extra=ctx.args)
+def refresh(ctx: typer.Context, targets: TargetsOption = None) -> None:
+    commands.do_refresh(_config(ctx), slot=_slot_flag(ctx), targets=targets, extra=ctx.args)
 
 
 @app.command("destroy", context_settings=PASSTHROUGH_CTX, help="Run `terraform destroy`, optionally targeted.")
-def destroy(
-    ctx: typer.Context,
-    targets: TargetsOption = None,
-) -> None:
-    commands.do_destroy(_config(ctx), targets=targets, extra=ctx.args)
+def destroy(ctx: typer.Context, targets: TargetsOption = None) -> None:
+    commands.do_destroy(_config(ctx), slot=_slot_flag(ctx), targets=targets, extra=ctx.args)
 
 
 @app.command(
@@ -178,23 +283,29 @@ def fmt(ctx: typer.Context) -> None:
 
 @app.command("output", context_settings=PASSTHROUGH_CTX, help="Print `terraform output -json`.")
 def output(ctx: typer.Context) -> None:
-    commands.do_output(_config(ctx), extra=ctx.args)
+    commands.do_output(_config(ctx), slot=_slot_flag(ctx), extra=ctx.args)
 
 
 @app.command(
     "import",
     context_settings=PASSTHROUGH_CTX,
     help=(
-        "Import an existing resource into the Terraform state. Forwards "
-        "the decrypted tfvars + saved env so the provider config resolves."
+        "Import an existing resource into the state. Forwards the decrypted "
+        "tfvars + saved env so the provider config resolves."
     ),
 )
 def import_cmd(
     ctx: typer.Context,
-    address: Annotated[str, typer.Argument(help="Target resource address (e.g. `aws_s3_bucket.foo`).")],
-    resource_id: Annotated[str, typer.Argument(metavar="ID", help="Provider-specific ID of the existing resource.")],
+    address: Annotated[str, typer.Argument(help="Target resource address.")],
+    resource_id: Annotated[str, typer.Argument(metavar="ID", help="Provider-specific resource ID.")],
 ) -> None:
-    commands.do_import(_config(ctx), address=address, resource_id=resource_id, extra=ctx.args)
+    commands.do_import(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        address=address,
+        resource_id=resource_id,
+        extra=ctx.args,
+    )
 
 
 # ---- `state` subcommand group -------------------------------------------------
@@ -210,12 +321,15 @@ app.add_typer(state_app, name="state")
 @state_app.command("list", context_settings=PASSTHROUGH_CTX, help="List resources in the state.")
 def state_list(
     ctx: typer.Context,
-    addresses: Annotated[
-        list[str] | None,
-        typer.Argument(help="Resource addresses to filter on. Omit to list everything."),
-    ] = None,
+    addresses: Annotated[list[str] | None, typer.Argument(help="Resource addresses to filter on.")] = None,
 ) -> None:
-    commands.do_state(_config(ctx), subcommand="list", args=addresses or [], extra=ctx.args)
+    commands.do_state(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        subcommand="list",
+        args=addresses or [],
+        extra=ctx.args,
+    )
 
 
 @state_app.command("show", context_settings=PASSTHROUGH_CTX, help="Show a resource in the state.")
@@ -223,7 +337,13 @@ def state_show(
     ctx: typer.Context,
     address: Annotated[str, typer.Argument(help="Resource address to inspect.")],
 ) -> None:
-    commands.do_state(_config(ctx), subcommand="show", args=[address], extra=ctx.args)
+    commands.do_state(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        subcommand="show",
+        args=[address],
+        extra=ctx.args,
+    )
 
 
 @state_app.command("mv", context_settings=PASSTHROUGH_CTX, help="Move an item in the state.")
@@ -232,26 +352,41 @@ def state_mv(
     source: Annotated[str, typer.Argument(help="Source resource address.")],
     destination: Annotated[str, typer.Argument(help="Destination resource address.")],
 ) -> None:
-    commands.do_state(_config(ctx), subcommand="mv", args=[source, destination], extra=ctx.args)
+    commands.do_state(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        subcommand="mv",
+        args=[source, destination],
+        extra=ctx.args,
+    )
 
 
 @state_app.command("rm", context_settings=PASSTHROUGH_CTX, help="Remove instances from the state.")
 def state_rm(
     ctx: typer.Context,
-    addresses: Annotated[
-        list[str],
-        typer.Argument(help="Resource addresses to remove (at least one required)."),
-    ],
+    addresses: Annotated[list[str], typer.Argument(help="Resource addresses to remove (≥1 required).")],
 ) -> None:
-    commands.do_state(_config(ctx), subcommand="rm", args=addresses, extra=ctx.args)
+    commands.do_state(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        subcommand="rm",
+        args=addresses,
+        extra=ctx.args,
+    )
 
 
-@state_app.command("pull", context_settings=PASSTHROUGH_CTX, help="Pull the current state and write it to stdout.")
+@state_app.command("pull", context_settings=PASSTHROUGH_CTX, help="Pull the current state to stdout.")
 def state_pull(ctx: typer.Context) -> None:
-    commands.do_state(_config(ctx), subcommand="pull", args=[], extra=ctx.args)
+    commands.do_state(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        subcommand="pull",
+        args=[],
+        extra=ctx.args,
+    )
 
 
-@state_app.command("push", context_settings=PASSTHROUGH_CTX, help="Update the remote state from a local state file.")
+@state_app.command("push", context_settings=PASSTHROUGH_CTX, help="Update the remote state from a local file.")
 def state_push(
     ctx: typer.Context,
     path: Annotated[
@@ -259,7 +394,13 @@ def state_push(
         typer.Argument(exists=True, file_okay=True, dir_okay=False, readable=True, help="Local state file."),
     ],
 ) -> None:
-    commands.do_state(_config(ctx), subcommand="push", args=[str(path)], extra=ctx.args)
+    commands.do_state(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        subcommand="push",
+        args=[str(path)],
+        extra=ctx.args,
+    )
 
 
 @state_app.command("replace-provider", context_settings=PASSTHROUGH_CTX, help="Replace provider in the state.")
@@ -270,29 +411,33 @@ def state_replace_provider(
 ) -> None:
     commands.do_state(
         _config(ctx),
+        slot=_slot_flag(ctx),
         subcommand="replace-provider",
         args=[from_provider, to_provider],
         extra=ctx.args,
     )
 
 
-@state_app.command(
-    "identities", context_settings=PASSTHROUGH_CTX, help="List the identities of resources in the state."
-)
+@state_app.command("identities", context_settings=PASSTHROUGH_CTX, help="List identities of resources in the state.")
 def state_identities(
     ctx: typer.Context,
-    addresses: Annotated[
-        list[str] | None,
-        typer.Argument(help="Resource addresses to filter on. Omit for all."),
-    ] = None,
+    addresses: Annotated[list[str] | None, typer.Argument(help="Resource addresses to filter on.")] = None,
 ) -> None:
-    commands.do_state(_config(ctx), subcommand="identities", args=addresses or [], extra=ctx.args)
+    commands.do_state(
+        _config(ctx),
+        slot=_slot_flag(ctx),
+        subcommand="identities",
+        args=addresses or [],
+        extra=ctx.args,
+    )
 
 
-@app.command("last", help="Print the last terraform invocation recorded by tfp (argv + exit code).")
+@app.command("last", help="Print the last terraform invocation for the active slot.")
 def last(ctx: typer.Context) -> None:
+    import shlex
+
     try:
-        payload = self_commands.do_last_invocation(_config(ctx))
+        payload = self_commands.do_last_invocation(_config(ctx), slot=_slot_flag(ctx))
     except self_commands.SelfCommandError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -300,17 +445,16 @@ def last(ctx: typer.Context) -> None:
     exit_code = payload.get("exit_code")
     typer.echo(f"exit_code = {exit_code if exit_code is not None else '(unknown, e.g. exec passthrough)'}")
     argv = payload.get("argv") or []
-    import shlex
-
     typer.echo(f"argv      = {' '.join(shlex.quote(a) for a in argv)}")
 
 
-@app.command("status", help="Print a one-line summary of the current init state.")
+@app.command("status", help="One-line summary of the active slot.")
 def status(ctx: typer.Context) -> None:
-    report = commands.status_report(_config(ctx))
+    report = commands.status_report(_config(ctx), slot=_slot_flag(ctx))
     if not report.initialized:
-        typer.echo("Not initialized. Run `tfp init <tfvars>` first.", err=True)
+        typer.echo("Not initialized. Run `tfp use <slot>` first.", err=True)
         raise typer.Exit(code=1)
+    typer.echo(f"slot        = {report.slot} (via {report.slot_source})")
     typer.echo(f"tfvars      = {report.tfvars}")
     typer.echo(f"source_root = {report.source_root}")
     typer.echo(f"backend_key = {report.backend_key or '(none)'}")
@@ -326,7 +470,7 @@ app.add_typer(self_app, name="self")
 self_config_app = typer.Typer(name="config", help="Inspect the active configuration.", no_args_is_help=True)
 self_app.add_typer(self_config_app, name="config")
 
-self_state_app = typer.Typer(name="state", help="Inspect or reset the saved init state.", no_args_is_help=True)
+self_state_app = typer.Typer(name="state", help="Inspect or reset saved per-slot state.", no_args_is_help=True)
 self_app.add_typer(self_state_app, name="state")
 
 self_banner_app = typer.Typer(name="banner", help="Inspect tfvars banners.", no_args_is_help=True)
@@ -334,10 +478,13 @@ self_app.add_typer(self_banner_app, name="banner")
 
 self_lock_app = typer.Typer(
     name="lock",
-    help="Inspect or break the remote-state lock. Azure backend only.",
+    help="Inspect or break the remote-state lock. azurerm + s3 backends only.",
     no_args_is_help=True,
 )
 self_app.add_typer(self_lock_app, name="lock")
+
+self_providers_app = typer.Typer(name="providers", help="Provider tooling.", no_args_is_help=True)
+self_app.add_typer(self_providers_app, name="providers")
 
 
 @self_app.command("init", help="Bootstrap a tf_project config in the current directory.")
@@ -363,23 +510,34 @@ def self_config_path() -> None:
     typer.echo(str(self_commands.do_self_config_path(pathlib.Path.cwd())))
 
 
-@self_state_app.command("show", help="Print the saved init state as JSON.")
-def self_state_show(ctx: typer.Context) -> None:
+@self_state_app.command("show", help="Print the saved slot state as JSON.")
+def self_state_show(
+    ctx: typer.Context,
+    all_slots: Annotated[bool, typer.Option("--all", help="Show state for every slot.")] = False,
+) -> None:
     try:
-        typer.echo(self_commands.do_self_state_show(_config(ctx)))
+        typer.echo(self_commands.do_self_state_show(_config(ctx), slot=_slot_flag(ctx), all_slots=all_slots))
     except self_commands.SelfCommandError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
 
 
-@self_state_app.command("clear", help="Delete the saved init state file.")
-def self_state_clear(ctx: typer.Context) -> None:
+@self_state_app.command("clear", help="Delete the saved slot state file (active slot, or all with --all).")
+def self_state_clear(
+    ctx: typer.Context,
+    all_slots: Annotated[bool, typer.Option("--all", help="Clear state for every slot.")] = False,
+) -> None:
     cfg = _config(ctx)
-    removed = self_commands.do_self_state_clear(cfg)
-    if removed:
-        typer.echo(f"Removed {cfg.state_file}")
-    else:
-        typer.echo(f"No state file at {cfg.state_file} — nothing to do.")
+    try:
+        removed = self_commands.do_self_state_clear(cfg, slot=_slot_flag(ctx), all_slots=all_slots)
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if not removed:
+        typer.echo("No state file to remove.")
+        return
+    for p in removed:
+        typer.echo(f"Removed {p}")
 
 
 @self_app.command("doctor", help="Run environment sanity checks.")
@@ -404,7 +562,7 @@ def self_trace(
     ctx: typer.Context,
     subcommand: Annotated[
         str,
-        typer.Argument(help="One of: init, plan, apply, refresh, destroy, output."),
+        typer.Argument(help="One of: use, plan, apply, refresh, destroy, output, import."),
     ],
     targets: TargetsOption = None,
     replaces: ReplacesOption = None,
@@ -415,6 +573,7 @@ def self_trace(
         argv = self_commands.do_self_trace(
             _config(ctx),
             subcommand=subcommand,
+            slot=_slot_flag(ctx),
             targets=targets,
             replaces=replaces,
         )
@@ -424,7 +583,7 @@ def self_trace(
     typer.echo(" ".join(shlex.quote(a) for a in argv))
 
 
-@self_banner_app.command("check", help="Parse and validate a tfvars banner without running terraform.")
+@self_banner_app.command("check", help="Parse and validate a tfvars banner.")
 def self_banner_check(
     ctx: typer.Context,
     tfvars: Annotated[
@@ -451,17 +610,35 @@ def self_snapshot(
     ] = None,
 ) -> None:
     try:
-        written = self_commands.do_self_snapshot(_config(ctx), dest=dest)
+        written = self_commands.do_self_snapshot(_config(ctx), slot=_slot_flag(ctx), dest=dest)
     except self_commands.SelfCommandError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"Wrote snapshot to {written}")
 
 
+@self_providers_app.command(
+    "lock",
+    help="Run `terraform providers lock` across common platforms (linux/darwin × amd64/arm64).",
+)
+def self_providers_lock(
+    ctx: typer.Context,
+    platforms: Annotated[
+        list[str] | None,
+        typer.Option("--platform", "-p", help="Override the default platform set (repeatable)."),
+    ] = None,
+) -> None:
+    try:
+        self_commands.do_self_providers_lock(_config(ctx), slot=_slot_flag(ctx), platforms=platforms)
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+
+
 @self_lock_app.command("status", help="Show the remote-state lock state (azurerm or s3+dynamodb).")
 def self_lock_status(ctx: typer.Context) -> None:
     try:
-        status = self_commands.do_self_lock_status(_config(ctx))
+        status = self_commands.do_self_lock_status(_config(ctx), slot=_slot_flag(ctx))
     except self_commands.SelfCommandError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -482,19 +659,13 @@ def self_lock_status(ctx: typer.Context) -> None:
     "break",
     help=(
         "Release the remote-state lock. Polite by default (terraform force-unlock); "
-        "pass --blunt to skip terraform and break the lease at the backend level."
+        "--blunt skips terraform and breaks the lease at the backend level."
     ),
 )
 def self_lock_break(
     ctx: typer.Context,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip the confirmation prompt.")] = False,
-    blunt: Annotated[
-        bool,
-        typer.Option(
-            "--blunt",
-            help="Skip the polite `terraform force-unlock` path; break the lease directly.",
-        ),
-    ] = False,
+    blunt: Annotated[bool, typer.Option("--blunt", help="Skip the polite path.")] = False,
 ) -> None:
     if not yes:
         typer.confirm(
@@ -502,7 +673,7 @@ def self_lock_break(
             abort=True,
         )
     try:
-        result = self_commands.do_self_lock_break(_config(ctx), blunt=blunt)
+        result = self_commands.do_self_lock_break(_config(ctx), slot=_slot_flag(ctx), blunt=blunt)
     except self_commands.SelfCommandError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -536,34 +707,67 @@ def _strip_global_flags(argv: list[str]) -> tuple[list[str], bool, bool]:
     return out, verbose, dry_run
 
 
-def _split_passthrough(argv: list[str]) -> tuple[bool, list[str]]:
-    """Decide whether to passthrough to `terraform` and, if so, what to forward."""
-    for i, arg in enumerate(argv):
+def _split_passthrough(argv: list[str]) -> tuple[bool, list[str], str | None]:
+    """Decide whether to passthrough to `terraform` and what to forward.
+
+    Returns ``(is_passthrough, forwarded_args, slot_flag)``. Pulls
+    ``-s/--slot <value>`` out of argv before scanning for the subcommand so
+    the passthrough sees clean terraform argv, and so the slot flag is
+    honoured by `do_passthrough` (env vars + -chdir come from the slot's
+    saved state).
+    """
+    slot_flag: str | None = None
+    i = 0
+    while i < len(argv):
+        arg = argv[i]
+        if arg in ("-s", "--slot") and i + 1 < len(argv):
+            slot_flag = argv[i + 1]
+            i += 2
+            continue
+        if arg.startswith("--slot="):
+            slot_flag = arg.split("=", 1)[1]
+            i += 1
+            continue
         if arg.startswith("-"):
+            i += 1
             continue
         if arg in WRAPPED_SUBCOMMANDS or arg == SELF_SUBCOMMAND:
-            return (False, [])
-        return (True, argv[i:])
-    return (False, [])
+            return (False, [], slot_flag)
+        return (True, argv[i:], slot_flag)
+    return (False, [], slot_flag)
 
 
 def main() -> None:
     """Entry point: handle global flags, route, and translate errors to exit codes."""
     args, verbose, dry_run = _strip_global_flags(sys.argv[1:])
 
-    # Best-effort: hand terraform.run a path for `tfp last` recording.
-    last_path: pathlib.Path | None = None
+    # Best-effort: if there's already an active slot, point `tfp last`
+    # recording at that slot's `last.json`. With no active slot (e.g. fresh
+    # checkout, or pre-`tfp use` invocation), leave `last_path` unset so
+    # the invocation simply isn't recorded.
     try:
-        last_path = Config.discover().tmp_dir / "last.json"
-    except Exception:  # noqa: BLE001 — config not present yet (e.g., `tfp self init`)
-        pass
+        cfg_for_last = Config.discover()
+    except ConfigError:
+        # No config (e.g. `tfp self init`), or malformed config — skip
+        # `last.json` routing here. The second `Config.discover()` inside
+        # the try block below will re-raise and be caught by the funnel,
+        # producing a clean exit-1 with the user-visible message.
+        cfg_for_last = None
+
+    last_path: pathlib.Path | None = None
+    if cfg_for_last is not None:
+        # Best-effort: route `last` recording into the active slot if any.
+        active = slots.resolve_active(cfg_for_last, flag=None)
+        if active is not None:
+            last_path = cfg_for_last.last_invocation_for(active.name)
     terraform.set_runtime_options(dry_run=dry_run, verbose=verbose, last_invocation_path=last_path)
 
     try:
-        is_passthrough, forwarded = _split_passthrough(args)
+        is_passthrough, forwarded, passthrough_slot = _split_passthrough(args)
         if is_passthrough:
             cfg = Config.discover()
-            commands.do_passthrough(cfg, forwarded)
+            migrate.run_if_needed(cfg)
+            commands.do_passthrough(cfg, forwarded, slot=passthrough_slot)
             return
         sys.argv = [sys.argv[0], *args]
         app()
@@ -575,10 +779,19 @@ def main() -> None:
     except banner.ProjectInfoNotFoundError as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)
+    except commands.NoActiveSlotError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
     except commands.StateNotInitializedError as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)
     except commands.StaleTfplanError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except slots.SlotConflictError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except slots.SlotError as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)
     except LockBusyError as exc:
@@ -589,5 +802,5 @@ def main() -> None:
         sys.exit(1)
 
 
-if __name__ == "__main__":
+if __name__ == "__main__":  # pragma: no cover
     main()

@@ -13,7 +13,7 @@ from tf_project.state import write_active
 def _write_tfvars(root: pathlib.Path, name: str, info: dict[str, object]) -> pathlib.Path:
     path = root / "tfvars" / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(f"# {json.dumps(info)}\nfoo = \"bar\"\n")
+    path.write_text(f'# {json.dumps(info)}\nfoo = "bar"\n')
     return path
 
 

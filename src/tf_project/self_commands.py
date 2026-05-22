@@ -200,10 +200,7 @@ def do_self_doctor(config: Config) -> list[DoctorCheck]:
             DoctorCheck(
                 name="orphan slots",
                 ok=False,
-                detail=(
-                    "found orphan slot directories with no matching banner: "
-                    + ", ".join(o.name for o in orphans)
-                ),
+                detail=("found orphan slot directories with no matching banner: " + ", ".join(o.name for o in orphans)),
             )
         )
     else:
@@ -301,9 +298,7 @@ def do_self_trace(
     from tf_project import commands  # late import to avoid circular
 
     if subcommand not in TRACE_SUBCOMMANDS:
-        raise SelfCommandError(
-            f"Unknown subcommand {subcommand!r}. Choose from: {', '.join(TRACE_SUBCOMMANDS)}."
-        )
+        raise SelfCommandError(f"Unknown subcommand {subcommand!r}. Choose from: {', '.join(TRACE_SUBCOMMANDS)}.")
 
     name = _resolve_slot_name(config, slot=slot)
 
@@ -330,13 +325,9 @@ def do_self_trace(
         case "apply":
             return commands.build_apply_argv(config, state=state, var_file=var_file, extra=extra)
         case "refresh":
-            return commands.build_refresh_argv(
-                config, state=state, var_file=var_file, targets=targets, extra=extra
-            )
+            return commands.build_refresh_argv(config, state=state, var_file=var_file, targets=targets, extra=extra)
         case "destroy":
-            return commands.build_destroy_argv(
-                config, state=state, var_file=var_file, targets=targets, extra=extra
-            )
+            return commands.build_destroy_argv(config, state=state, var_file=var_file, targets=targets, extra=extra)
         case "output":
             return commands.build_output_argv(config, state=state, extra=extra)
         case "import":

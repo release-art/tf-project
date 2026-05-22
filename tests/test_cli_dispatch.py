@@ -174,9 +174,7 @@ def test_use_surfaces_slot_conflict_error(
     assert "defined by 2 tfvars files" in result.output or "defined by 2 tfvars files" in (result.stderr or "")
 
 
-def test_use_surfaces_slot_error(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_use_surfaces_slot_error(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project import slots as slots_mod
 
     def boom(*a: object, **kw: object) -> None:
@@ -206,9 +204,7 @@ def test_ls_json(runner: CliRunner, in_project: pathlib.Path) -> None:
     assert "slots" in payload and "orphans" in payload
 
 
-def test_ls_orphan_section(
-    runner: CliRunner, in_project: pathlib.Path
-) -> None:
+def test_ls_orphan_section(runner: CliRunner, in_project: pathlib.Path) -> None:
     # Create a slot dir with no matching banner.
     (in_project / "tmp" / "slots" / "ghost").mkdir(parents=True)
     result = runner.invoke(app, ["ls"])
@@ -216,9 +212,7 @@ def test_ls_orphan_section(
     assert "orphans" in result.output and "ghost" in result.output
 
 
-def test_rm_surfaces_not_found(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_rm_surfaces_not_found(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project import slots as slots_mod
 
     def boom(*a: object, **kw: object) -> None:
@@ -239,9 +233,7 @@ def test_rm_dispatches(runner: CliRunner, in_project: pathlib.Path, monkeypatch:
 # ---- last / status ----------------------------------------------------------
 
 
-def test_last_dispatches(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_last_dispatches(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "tf_project.cli.self_commands.do_last_invocation",
         lambda config, slot=None: {
@@ -273,7 +265,10 @@ def test_status_uninitialized(runner: CliRunner, in_project: pathlib.Path) -> No
 
 
 def test_status_initialized(
-    runner: CliRunner, in_project: pathlib.Path, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    runner: CliRunner,
+    in_project: pathlib.Path,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     result = runner.invoke(app, ["status"])
@@ -325,7 +320,10 @@ def test_self_state_show_no_active(runner: CliRunner, in_project: pathlib.Path) 
 
 
 def test_self_state_show_dispatches(
-    runner: CliRunner, in_project: pathlib.Path, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    runner: CliRunner,
+    in_project: pathlib.Path,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     result = runner.invoke(app, ["self", "state", "show"])
@@ -342,7 +340,10 @@ def test_self_state_clear_when_absent(runner: CliRunner, in_project: pathlib.Pat
 
 
 def test_self_state_clear_dispatches(
-    runner: CliRunner, in_project: pathlib.Path, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    runner: CliRunner,
+    in_project: pathlib.Path,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     result = runner.invoke(app, ["self", "state", "clear"])
@@ -374,7 +375,10 @@ def test_self_doctor_failing(runner: CliRunner, in_project: pathlib.Path, monkey
 
 
 def test_self_trace_dispatches(
-    runner: CliRunner, in_project: pathlib.Path, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    runner: CliRunner,
+    in_project: pathlib.Path,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     result = runner.invoke(app, ["self", "trace", "plan"])
@@ -383,16 +387,17 @@ def test_self_trace_dispatches(
 
 
 def test_self_trace_unknown(
-    runner: CliRunner, in_project: pathlib.Path, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    runner: CliRunner,
+    in_project: pathlib.Path,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     result = runner.invoke(app, ["self", "trace", "bogus"])
     assert result.exit_code == 1
 
 
-def test_self_banner_check(
-    runner: CliRunner, in_project: pathlib.Path, tfvars: pathlib.Path
-) -> None:
+def test_self_banner_check(runner: CliRunner, in_project: pathlib.Path, tfvars: pathlib.Path) -> None:
     result = runner.invoke(app, ["self", "banner", "check", str(tfvars)])
     assert result.exit_code == 0
     payload = json.loads(result.output)
@@ -412,9 +417,7 @@ def test_self_snapshot_dispatches(
     assert "snapshot" in result.output
 
 
-def test_self_snapshot_failure(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_snapshot_failure(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.self_commands import SelfCommandError
 
     def boom(*a: object, **kw: object) -> pathlib.Path:
@@ -447,9 +450,7 @@ def test_self_providers_lock_failure(
     assert result.exit_code == 1
 
 
-def test_self_lock_status_locked(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_lock_status_locked(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.self_commands import LockStatus
 
     monkeypatch.setattr(
@@ -482,9 +483,7 @@ def test_self_lock_status_unlocked(
     assert result.exit_code == 0
 
 
-def test_self_lock_status_failure(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_lock_status_failure(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.self_commands import SelfCommandError
 
     def boom(*a: object, **kw: object) -> object:
@@ -495,25 +494,19 @@ def test_self_lock_status_failure(
     assert result.exit_code == 1
 
 
-def test_self_lock_break_polite(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_lock_break_polite(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.self_commands import BreakResult
 
     monkeypatch.setattr(
         "tf_project.cli.self_commands.do_self_lock_break",
-        lambda config, slot=None, blunt=False: BreakResult(
-            method="force-unlock", backend="azurerm", lock_id="abc"
-        ),
+        lambda config, slot=None, blunt=False: BreakResult(method="force-unlock", backend="azurerm", lock_id="abc"),
     )
     result = runner.invoke(app, ["self", "lock", "break", "-y"])
     assert result.exit_code == 0
     assert "force-unlock" in result.output
 
 
-def test_self_lock_break_blunt(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_lock_break_blunt(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.self_commands import BreakResult
 
     monkeypatch.setattr(
@@ -525,9 +518,7 @@ def test_self_lock_break_blunt(
     assert "lease" in result.output or "s3" in result.output
 
 
-def test_self_lock_break_failure(
-    runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_lock_break_failure(runner: CliRunner, in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.self_commands import SelfCommandError
 
     def boom(*a: object, **kw: object) -> object:

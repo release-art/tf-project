@@ -93,8 +93,7 @@ def _require_slot_state(config: Config, slot_name: str) -> MyState:
         except slots_mod.SlotError as exc:
             raise StateNotInitializedError(str(exc)) from exc
         raise StateNotInitializedError(
-            f"No state for slot {slot_name!r} at {config.state_file_for(slot_name)}. "
-            f"Run `tfp use {slot_name}` first."
+            f"No state for slot {slot_name!r} at {config.state_file_for(slot_name)}. Run `tfp use {slot_name}` first."
         )
     return state
 
@@ -361,9 +360,7 @@ def build_import_argv(
     ]
 
 
-def build_output_argv(
-    config: Config, *, state: MyState, extra: Sequence[str] | None = None
-) -> list[str]:
+def build_output_argv(config: Config, *, state: MyState, extra: Sequence[str] | None = None) -> list[str]:
     return [
         config.terraform_binary,
         f"-chdir={state.source_root}",
@@ -457,9 +454,7 @@ def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> R
                     file=sys.stderr,
                 )
             raise
-        config.backend_hash_for(resolved.name).write_text(
-            _backend_signature(resolved, config.terraform_binary) + "\n"
-        )
+        config.backend_hash_for(resolved.name).write_text(_backend_signature(resolved, config.terraform_binary) + "\n")
 
     state = MyState(
         slot=resolved.name,
@@ -474,8 +469,7 @@ def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> R
     write_active(config, resolved.name)
 
     print(
-        f"active slot → {resolved.name} "
-        f"(file: {config.active_file}; affects all shells without TFP_SLOT set)",
+        f"active slot → {resolved.name} (file: {config.active_file}; affects all shells without TFP_SLOT set)",
         file=sys.stderr,
     )
     return resolved
@@ -496,8 +490,7 @@ def do_rm(config: Config, *, name: str, force: bool, slot: str | None = None) ->
     active = slots_mod.resolve_active(config, flag=slot)
     if active is not None and active.name == name and not force:
         raise slots_mod.SlotInUseError(
-            f"slot {name!r} is the active slot ({active.source}). "
-            "Pass --force to remove it anyway."
+            f"slot {name!r} is the active slot ({active.source}). Pass --force to remove it anyway."
         )
     slot_dir = config.slot_dir_for(name)
     if not slot_dir.exists():
@@ -567,9 +560,7 @@ def do_refresh(
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
         with _provider(config).materialize(state.tfvars) as decrypted:
             terraform.run(
-                build_refresh_argv(
-                    config, state=state, var_file=str(decrypted), targets=targets, extra=extra
-                ),
+                build_refresh_argv(config, state=state, var_file=str(decrypted), targets=targets, extra=extra),
                 env=_env_for(config, state),
             )
 
@@ -585,9 +576,7 @@ def do_destroy(
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
         with _provider(config).materialize(state.tfvars) as decrypted:
             terraform.run(
-                build_destroy_argv(
-                    config, state=state, var_file=str(decrypted), targets=targets, extra=extra
-                ),
+                build_destroy_argv(config, state=state, var_file=str(decrypted), targets=targets, extra=extra),
                 env=_env_for(config, state),
             )
 

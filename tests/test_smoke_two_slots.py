@@ -45,12 +45,8 @@ def two_slot_config(config: Config, project_tree: pathlib.Path) -> Config:
     project_dir.mkdir(parents=True, exist_ok=True)
     (project_dir / "main.tf").write_text(MAIN_TF)
     # `dev` (already created by the `project_tree` fixture) and `prod`.
-    (config.tfvars_dir / "dev.tfvars").write_text(
-        '# {"header":"terraform","project":"demo"}\nvalue = "from-dev"\n'
-    )
-    (config.tfvars_dir / "prod.tfvars").write_text(
-        '# {"header":"terraform","project":"demo"}\nvalue = "from-prod"\n'
-    )
+    (config.tfvars_dir / "dev.tfvars").write_text('# {"header":"terraform","project":"demo"}\nvalue = "from-dev"\n')
+    (config.tfvars_dir / "prod.tfvars").write_text('# {"header":"terraform","project":"demo"}\nvalue = "from-prod"\n')
     return config.model_copy(update={"state_key_prefix": ""})
 
 

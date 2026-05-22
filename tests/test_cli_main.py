@@ -36,9 +36,7 @@ def _run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> int:
     return 0
 
 
-def test_main_passthrough_invokes_exec(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_passthrough_invokes_exec(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unknown subcommand → `os.execvpe` (mocked); no SystemExit."""
     calls: list[list[str]] = []
     monkeypatch.setattr(
@@ -51,7 +49,10 @@ def test_main_passthrough_invokes_exec(
 
 
 def test_main_passthrough_with_slot_flag(
-    in_project: pathlib.Path, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    in_project: pathlib.Path,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     """`tfp -s dev <unknown>` routes -chdir + env from the dev slot."""
     save_dev_state()
@@ -66,17 +67,13 @@ def test_main_passthrough_with_slot_flag(
     assert any(c.startswith("-chdir=") for c in cmd)
 
 
-def test_main_wrapped_command_succeeds(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_wrapped_command_succeeds(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr("tf_project.cli.commands.do_fmt", lambda config, extra=None: None)
     code = _run_main(monkeypatch, ["fmt"])
     assert code == 0
 
 
-def test_main_translates_terraform_exit(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_terraform_exit(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project import terraform as terraform_mod
 
     def boom(*a: object, **kw: object) -> None:
@@ -87,9 +84,7 @@ def test_main_translates_terraform_exit(
     assert code == 2
 
 
-def test_main_translates_banner_error(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_banner_error(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.banner import BannerError
 
     def boom(*a: object, **kw: object) -> None:
@@ -100,9 +95,7 @@ def test_main_translates_banner_error(
     assert code == 1
 
 
-def test_main_translates_project_info_not_found(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_project_info_not_found(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.banner import ProjectInfoNotFoundError
 
     def boom(*a: object, **kw: object) -> None:
@@ -113,17 +106,13 @@ def test_main_translates_project_info_not_found(
     assert code == 1
 
 
-def test_main_translates_no_active_slot(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_no_active_slot(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A plan without an active slot surfaces NoActiveSlotError via main()."""
     code = _run_main(monkeypatch, ["plan"])
     assert code == 1
 
 
-def test_main_translates_state_not_initialized(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_state_not_initialized(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.commands import StateNotInitializedError
 
     def boom(*a: object, **kw: object) -> None:
@@ -134,9 +123,7 @@ def test_main_translates_state_not_initialized(
     assert code == 1
 
 
-def test_main_translates_stale_tfplan(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_stale_tfplan(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.commands import StaleTfplanError
 
     def boom(*a: object, **kw: object) -> None:
@@ -147,9 +134,7 @@ def test_main_translates_stale_tfplan(
     assert code == 1
 
 
-def test_main_translates_lock_busy(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_lock_busy(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project.state import LockBusyError
 
     def boom(*a: object, **kw: object) -> None:
@@ -160,9 +145,7 @@ def test_main_translates_lock_busy(
     assert code == 1
 
 
-def test_main_translates_slot_conflict(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_slot_conflict(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """SlotConflictError raised inside a typer command's `try` is also caught at main()."""
     from tf_project import slots as slots_mod
     from tf_project.slots import ResolvedSlot
@@ -189,9 +172,7 @@ def test_main_translates_slot_conflict(
     assert code == 1
 
 
-def test_main_translates_slot_error(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_slot_error(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from tf_project import slots as slots_mod
 
     def boom(*a: object, **kw: object) -> None:
@@ -202,9 +183,7 @@ def test_main_translates_slot_error(
     assert code == 1
 
 
-def test_main_translates_config_error(
-    project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_main_translates_config_error(project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Malformed tf_project.toml → ConfigError → exit 1 via main()."""
     (project_tree / "tf_project.toml").write_text("[tf_project]\nterraform_dir = 123\n")
     monkeypatch.chdir(project_tree)
@@ -250,7 +229,9 @@ def test_complete_tfvars_returns_empty_without_config(tmp_path: pathlib.Path, mo
 
 
 def test_complete_tfvars_skips_missing_dir(
-    project_tree: pathlib.Path, write_tfp_toml, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    project_tree: pathlib.Path,
+    write_tfp_toml,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     write_tfp_toml(project_tree)
     # Remove tfvars_dir so the is_dir() guard returns []
@@ -286,7 +267,9 @@ def test_complete_tfvars_handles_unrelated_cwd(
 
 
 def test_complete_tfvars_handles_no_banner(
-    project_tree: pathlib.Path, write_tfp_toml, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    project_tree: pathlib.Path,
+    write_tfp_toml,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     """A banner-less tfvars file is listed with `project=(no banner)`."""
     write_tfp_toml(project_tree)
@@ -298,16 +281,16 @@ def test_complete_tfvars_handles_no_banner(
     assert "(no banner)" in (helps[naked] or "")
 
 
-def test_complete_slot_returns_empty_without_config(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_complete_slot_returns_empty_without_config(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     items = cli._complete_slot(None, None, "")  # type: ignore[arg-type]
     assert items == []
 
 
 def test_complete_use_arg_combines_both(
-    project_tree: pathlib.Path, write_tfp_toml, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    project_tree: pathlib.Path,
+    write_tfp_toml,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     write_tfp_toml(project_tree)
     monkeypatch.chdir(project_tree)
@@ -317,9 +300,7 @@ def test_complete_use_arg_combines_both(
     assert any(v.endswith("dev.tfvars") for v in values)  # tfvars path
 
 
-def test_self_lock_break_aborts_without_yes(
-    in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_lock_break_aborts_without_yes(in_project: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Without `-y` and without input piped in, the confirmation prompt aborts."""
     from typer.testing import CliRunner
 

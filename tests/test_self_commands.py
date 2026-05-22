@@ -206,9 +206,7 @@ def test_self_trace_arms(
     assert argv[0] == config.terraform_binary
 
 
-def test_self_trace_requires_state_for_non_use_subcommands(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_self_trace_requires_state_for_non_use_subcommands(config: Config, tfvars: pathlib.Path) -> None:
     """Subcommands other than `use` need saved state."""
     from tf_project.state import write_active
 
@@ -232,7 +230,9 @@ def test_self_trace_use_missing_banner(config: Config, tfvars: pathlib.Path) -> 
 
 
 def test_self_state_show_all(
-    config: Config, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     """`--all` shows a map of every banner-defined slot."""
     save_dev_state()
@@ -243,7 +243,9 @@ def test_self_state_show_all(
 
 
 def test_self_state_clear_all(
-    config: Config, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     removed = self_commands.do_self_state_clear(config, slot=None, all_slots=True)
@@ -285,7 +287,10 @@ def test_self_snapshot_writes_to_default_dest(
 
 
 def test_self_snapshot_terraform_missing(
-    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
 
@@ -298,7 +303,10 @@ def test_self_snapshot_terraform_missing(
 
 
 def test_self_snapshot_terraform_failure(
-    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     import subprocess
 
@@ -313,7 +321,10 @@ def test_self_snapshot_terraform_failure(
 
 
 def test_self_providers_lock_default_platforms(
-    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     calls: list[list[str]] = []
@@ -325,7 +336,10 @@ def test_self_providers_lock_default_platforms(
 
 
 def test_self_providers_lock_custom_platforms(
-    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     save_dev_state()
     monkeypatch.setattr("tf_project.terraform.run", lambda cmd, env=None: None)

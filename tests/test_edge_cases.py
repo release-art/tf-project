@@ -131,9 +131,7 @@ def test_versioned_model_migrate_called_for_older(tmp_path: pathlib.Path) -> Non
     assert loaded.field == "migrated"
 
 
-def test_dump_file_cleans_up_tmp_on_failure(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_dump_file_cleans_up_tmp_on_failure(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Mid-write crash unlinks the tmp file."""
     from tf_project.models import MyState
 
@@ -160,9 +158,7 @@ def test_dump_file_cleans_up_tmp_on_failure(
 # ---- lock.py ----------------------------------------------------------------
 
 
-def test_azure_lock_missing_backend_fields_raises(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_azure_lock_missing_backend_fields_raises(config: Config, tfvars: pathlib.Path) -> None:
     """Azure provider raises if storage_account_name etc. aren't in backend_config."""
     from tf_project.lock import AzureLockProvider, LockProviderError
     from tf_project.models import MyState
@@ -181,9 +177,7 @@ def test_azure_lock_missing_backend_fields_raises(
         provider.status()
 
 
-def test_s3_lock_missing_backend_fields_raises(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_s3_lock_missing_backend_fields_raises(config: Config, tfvars: pathlib.Path) -> None:
     """S3 provider raises if dynamodb_table is missing."""
     from tf_project.lock import LockProviderError, S3LockProvider
     from tf_project.models import MyState
@@ -218,9 +212,7 @@ def test_lock_info_empty_property() -> None:
     assert not LockInfo(id="x").empty
 
 
-def test_select_provider_rejects_s3_without_dynamodb(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_select_provider_rejects_s3_without_dynamodb(config: Config, tfvars: pathlib.Path) -> None:
     """S3 backend without DynamoDB → LockProviderError (terraform doesn't lock those)."""
     from tf_project.lock import LockProviderError, select_provider
     from tf_project.models import MyState
@@ -311,9 +303,7 @@ def test_migrate_skips_when_legacy_top_level_not_object(config: Config) -> None:
     assert result.migrated is False
 
 
-def test_migrate_aborts_when_legacy_banner_unreadable(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_migrate_aborts_when_legacy_banner_unreadable(config: Config, tfvars: pathlib.Path) -> None:
     """If the referenced tfvars has no parseable banner, migration aborts."""
     from tf_project import migrate
 
@@ -332,9 +322,7 @@ def test_migrate_aborts_when_legacy_banner_unreadable(
     assert result.note is not None and "banner" in result.note
 
 
-def test_migrate_moves_legacy_tfplan(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_migrate_moves_legacy_tfplan(config: Config, tfvars: pathlib.Path) -> None:
     """A legacy `my.tfplan` (and stale `.meta.json`) get relocated under the slot."""
     from tf_project import migrate
 
@@ -357,9 +345,7 @@ def test_migrate_moves_legacy_tfplan(
 # ---- terraform.py -----------------------------------------------------------
 
 
-def test_record_invocation_swallows_oserror(
-    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_record_invocation_swallows_oserror(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """`_record_invocation` is best-effort: an OSError during dump_file is silenced."""
     from tf_project import terraform
 
@@ -439,9 +425,7 @@ def test_resolved_slot_computed_fields(config: Config, tfvars: pathlib.Path) -> 
     assert slot.backend_hash_file == slot.slot_dir / "backend.hash"
 
 
-def test_resolve_slot_by_relative_path(
-    config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_resolve_slot_by_relative_path(config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """A relative tfvars path is resolved against cwd."""
     from tf_project.slots import resolve_slot
 
@@ -512,9 +496,7 @@ def test_self_doctor_secrets_disabled(config: Config) -> None:
     assert "disabled" in names["secrets command"].detail
 
 
-def test_self_doctor_secrets_command_missing(
-    config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_self_doctor_secrets_command_missing(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     """When the secrets binary isn't on PATH, doctor flags it."""
     from tf_project import self_commands
     from tf_project.config import SecretsConfig
@@ -526,9 +508,7 @@ def test_self_doctor_secrets_command_missing(
     assert secrets_check.ok is False
 
 
-def test_self_doctor_reports_slot_conflict(
-    config: Config, project_tree: pathlib.Path
-) -> None:
+def test_self_doctor_reports_slot_conflict(config: Config, project_tree: pathlib.Path) -> None:
     """Doctor surfaces banner-uniqueness violations as a failed check."""
     from tf_project import self_commands
 
@@ -590,9 +570,7 @@ def test_self_state_clear_when_active_slot_has_no_state(config: Config) -> None:
 # ---- commands.py — narrow branches ------------------------------------------
 
 
-def test_do_passthrough_no_active_slot_runs_bare(
-    config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_do_passthrough_no_active_slot_runs_bare(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     """`tfp <unknown>` with no active slot runs terraform with neither -chdir nor env."""
     from tf_project import commands
 
@@ -654,9 +632,7 @@ def test_status_report_active_but_no_state(config: Config) -> None:
     assert report.slot_source == "file"
 
 
-def test_slot_listing_warm_marker(
-    config: Config, tfvars: pathlib.Path, save_dev_state: object
-) -> None:
+def test_slot_listing_warm_marker(config: Config, tfvars: pathlib.Path, save_dev_state: object) -> None:
     """slot_listing reports `warm=True` and an mtime once `.terraform/providers/` exists."""
     from tf_project import commands
 
@@ -725,7 +701,10 @@ def _seed_plan_with_meta(
 
 
 def test_drift_project_changes(
-    config: Config, tfvars: pathlib.Path, save_dev_state, run_calls: object  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    run_calls: object,  # type: ignore[no-untyped-def]
 ) -> None:
     """Apply refuses when meta.project differs from current resolved.project."""
     from tf_project import commands
@@ -736,7 +715,10 @@ def test_drift_project_changes(
 
 
 def test_drift_state_key_changes(
-    config: Config, tfvars: pathlib.Path, save_dev_state, run_calls: object  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    run_calls: object,  # type: ignore[no-untyped-def]
 ) -> None:
     """Apply refuses when state_key differs."""
     from tf_project import commands
@@ -747,7 +729,10 @@ def test_drift_state_key_changes(
 
 
 def test_drift_backend_config_changes(
-    config: Config, tfvars: pathlib.Path, save_dev_state, run_calls: object  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    run_calls: object,  # type: ignore[no-untyped-def]
 ) -> None:
     """Apply refuses when backend_config differs."""
     from tf_project import commands
@@ -763,7 +748,10 @@ def test_drift_backend_config_changes(
 
 
 def test_drift_env_changes(
-    config: Config, tfvars: pathlib.Path, save_dev_state, run_calls: object  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    run_calls: object,  # type: ignore[no-untyped-def]
 ) -> None:
     """Apply refuses when banner env differs."""
     from tf_project import commands
@@ -782,7 +770,9 @@ def test_drift_env_changes(
 
 
 def test_last_invocation_returns_payload(
-    config: Config, tfvars: pathlib.Path, save_dev_state  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
 ) -> None:
     """`do_last_invocation` reads back the recorded payload."""
     from tf_project import self_commands
@@ -887,7 +877,9 @@ def test_banner_validation_error_no_loc(tmp_path: pathlib.Path) -> None:
 
 
 def test_cli_self_state_clear_surfaces_error(
-    project_tree: pathlib.Path, write_tfp_toml, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    project_tree: pathlib.Path,
+    write_tfp_toml,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     """A SelfCommandError raised by do_self_state_clear → exit 1."""
     from typer.testing import CliRunner
@@ -929,17 +921,15 @@ def test_banner_skips_non_terraform_json_comment(tmp_path: pathlib.Path) -> None
     from tf_project import banner as banner_mod
 
     f = tmp_path / "x.tfvars"
-    f.write_text(
-        '# {"unrelated": "json"}\n'
-        '# {"header": "terraform", "project": "demo"}\n'
-        'foo = "bar"\n'
-    )
+    f.write_text('# {"unrelated": "json"}\n# {"header": "terraform", "project": "demo"}\nfoo = "bar"\n')
     parsed = banner_mod.find_banner(f)
     assert parsed.project == "demo"
 
 
 def test_complete_slot_filters_by_prefix(
-    project_tree: pathlib.Path, write_tfp_toml, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    project_tree: pathlib.Path,
+    write_tfp_toml,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     """`_complete_slot` returns [] when no slot matches the prefix."""
     from tf_project import cli
@@ -951,7 +941,10 @@ def test_complete_slot_filters_by_prefix(
 
 
 def test_do_refresh_runs(
-    config: Config, tfvars: pathlib.Path, save_dev_state, run_calls: object  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    run_calls: object,  # type: ignore[no-untyped-def]
 ) -> None:
     """do_refresh dispatches to apply argv builder with `-var-file` and slot env."""
     from tf_project import commands
@@ -964,7 +957,10 @@ def test_do_refresh_runs(
 
 
 def test_do_output_runs(
-    config: Config, tfvars: pathlib.Path, save_dev_state, run_calls: object  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    run_calls: object,  # type: ignore[no-untyped-def]
 ) -> None:
     """do_output spawns `terraform output -json`."""
     from tf_project import commands
@@ -975,9 +971,7 @@ def test_do_output_runs(
     assert "output" in cmd and "-json" in cmd
 
 
-def test_self_state_show_no_state_for_named_slot(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_self_state_show_no_state_for_named_slot(config: Config, tfvars: pathlib.Path) -> None:
     """do_self_state_show with --slot pointing at a banner-defined slot that has no state."""
     from tf_project import self_commands
 
@@ -992,9 +986,7 @@ def test_resolve_slot_name_with_explicit_slot(config: Config) -> None:
     assert self_commands._resolve_slot_name(config, slot="explicit") == "explicit"
 
 
-def test_migrate_aborts_when_legacy_unreadable(
-    config: Config, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_migrate_aborts_when_legacy_unreadable(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
     """If reading the legacy file raises OSError, migration aborts cleanly."""
     from tf_project import migrate
 
@@ -1008,9 +1000,7 @@ def test_migrate_aborts_when_legacy_unreadable(
     assert result.migrated is False
 
 
-def test_list_orphans_skips_banner_matching_dirs(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_list_orphans_skips_banner_matching_dirs(config: Config, tfvars: pathlib.Path) -> None:
     """A slot dir whose name matches a banner-defined slot is NOT an orphan."""
     from tf_project.slots import list_orphans
 
@@ -1019,7 +1009,11 @@ def test_list_orphans_skips_banner_matching_dirs(
 
 
 def test_self_snapshot_with_explicit_dest(
-    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,  # type: ignore[no-untyped-def]
 ) -> None:
     """`do_self_snapshot(dest=...)` skips the timestamp-default branch."""
     from tf_project import self_commands
@@ -1098,7 +1092,9 @@ def test_config_absolute_paths_in_toml(tmp_path: pathlib.Path) -> None:
 
 
 def test_complete_tfvars_skips_non_matching_prefix(
-    project_tree: pathlib.Path, write_tfp_toml, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    project_tree: pathlib.Path,
+    write_tfp_toml,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     """`_complete_tfvars` continues past paths whose display doesn't start with the prefix."""
     from tf_project import cli
@@ -1136,9 +1132,7 @@ def test_self_state_clear_all_skips_slots_without_state(
     assert removed == []
 
 
-def test_plan_inputs_sha256_skips_missing_source_root(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_plan_inputs_sha256_skips_missing_source_root(config: Config, tfvars: pathlib.Path) -> None:
     """The rolling hash works even if source_root doesn't exist on disk."""
     from tf_project.commands import _plan_inputs_sha256
     from tf_project.models import MyState
@@ -1155,9 +1149,7 @@ def test_plan_inputs_sha256_skips_missing_source_root(
     assert len(sha) == 64
 
 
-def test_azure_blob_args_without_optional_fields(
-    config: Config, tfvars: pathlib.Path
-) -> None:
+def test_azure_blob_args_without_optional_fields(config: Config, tfvars: pathlib.Path) -> None:
     """Azure provider builds blob_args without --resource-group / --subscription when absent."""
     from tf_project.lock import AzureLockProvider
     from tf_project.models import MyState
@@ -1202,7 +1194,10 @@ def test_decode_s3_lock_info_non_dict_payload() -> None:
 
 
 def test_self_lock_break_status_raises_falls_through(
-    config: Config, tfvars: pathlib.Path, save_dev_state, monkeypatch: pytest.MonkeyPatch  # type: ignore[no-untyped-def]
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
     """When `provider.status()` raises during the polite path, fall through to blunt."""
     from tf_project import (

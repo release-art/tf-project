@@ -14,10 +14,10 @@ from __future__ import annotations
 import json
 import os
 import pathlib
-import sys
+import secrets
 from typing import Any, ClassVar, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, model_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class SchemaError(RuntimeError):
@@ -82,14 +82,25 @@ class VersionedModel(PersistedModel):
     def dump_file(self, path: pathlib.Path) -> None:
         """Atomically write the model to `path` as pretty-printed JSON.
 
-        Writes to a sibling temp file in the same directory, then `os.replace`s
-        over `path` — guarantees readers either see the old content or the
-        new, never a half-written file (even on SIGINT mid-write).
+        Writes to a sibling temp file in the same directory, then
+        `Path.replace`s over `path` — readers either see the old content or
+        the new, never a half-written file (even on SIGINT mid-write).
+
+        The tmp suffix combines pid + random token so concurrent writers on
+        the same host or two containers sharing a bind-mounted `tmp_dir`
+        can't collide (PID alone is not unique across PID namespaces). On
+        crash between `write_text` and `replace` the tmp file is unlinked;
+        an external SIGKILL may still leak it (cheaply named, never read
+        after the fact).
         """
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-        tmp.write_text(self.model_dump_json(indent=4) + "\n")
-        tmp.replace(path)
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            tmp.write_text(self.model_dump_json(indent=4) + "\n")
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
     @classmethod
     def migrate(cls, raw: dict[str, Any], *, from_version: int) -> dict[str, Any]:
@@ -107,13 +118,9 @@ class Banner(BaseModel):
     """User-authored tfvars banner.
 
     Carved out of the strict default: `extra="allow"` so unknown fields are
-    retained on `model_extra`, then a validator logs them to stderr. This
-    keeps banner files forward-compatible (older tfp tolerates new banner
-    fields) while still surfacing surprise content rather than silently
-    swallowing it.
-
-    Provenance (`tfvars` path) is passed via `model_validate(..., context=...)`
-    so the model itself stays free of bookkeeping fields.
+    retained on `model_extra` for the file-reading layer to surface. The
+    model itself stays I/O-free; `banner.find_banner` is responsible for
+    emitting any user-visible warnings about unexpected fields.
     """
 
     model_config = ConfigDict(extra="allow", frozen=True)
@@ -124,16 +131,6 @@ class Banner(BaseModel):
     state_key: str | None = Field(default=None, min_length=1)
     env: dict[str, str] = Field(default_factory=dict)
     backend_config: dict[str, str] = Field(default_factory=dict)
-
-    @model_validator(mode="after")
-    def _warn_on_extras(self, info: ValidationInfo) -> Self:
-        if not self.model_extra:
-            return self
-        ctx = info.context or {}
-        source = ctx.get("tfvars", "<unknown>")
-        unknown = ", ".join(sorted(self.model_extra))
-        print(f"warning: banner in {source} has unknown fields: {unknown}", file=sys.stderr)
-        return self
 
 
 # ---- MyState (per-slot persistent init state) ---------------------------------

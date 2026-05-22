@@ -8,7 +8,6 @@ from tf_project.config import Config
 from tf_project.models import MyState
 from tf_project.secrets import CommandProvider, NoopProvider
 from tf_project.state import (
-    decrypted_tfvars,
     load_state,
     read_active,
     save_state,
@@ -45,7 +44,7 @@ def test_load_returns_none_when_absent(config: Config) -> None:
 
 def test_decrypted_tfvars_noop(config: Config, tfvars: pathlib.Path) -> None:
     state = _make_state(tfvars)
-    with decrypted_tfvars(state, NoopProvider()) as p:
+    with NoopProvider().materialize(state.tfvars) as p:
         assert p == tfvars
 
 
@@ -63,7 +62,7 @@ def test_decrypted_tfvars_shredded_on_normal_exit(
 
     monkeypatch.setattr("tf_project.secrets.subprocess.check_call", fake_check_call)
     provider = CommandProvider(("echo", "{in}", "{out}"))
-    with decrypted_tfvars(state, provider) as path:
+    with provider.materialize(state.tfvars) as path:
         assert path.exists()
         assert path.read_text() == "decrypted secret payload"
     assert "out" in captured
@@ -95,7 +94,7 @@ def test_decrypted_tfvars_cleanup_on_exception(
     monkeypatch.setattr("tf_project.secrets.subprocess.check_call", fake_check_call)
     provider = CommandProvider(("echo", "{in}", "{out}"))
     with pytest.raises(RuntimeError, match="boom"):
-        with decrypted_tfvars(state, provider):
+        with provider.materialize(state.tfvars):
             raise RuntimeError("boom")
     assert "out" in captured
     assert not captured["out"].exists()

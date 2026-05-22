@@ -18,7 +18,7 @@ import json
 import subprocess
 from typing import Any, Protocol
 
-from tf_project.state import MyState
+from tf_project.models import MyState
 
 
 class LockProviderError(RuntimeError):

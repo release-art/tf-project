@@ -1,9 +1,8 @@
-"""POSIX file locks and per-slot path helpers for persistent state.
+"""POSIX file locks and per-slot persistence plumbing.
 
-The state model itself (`MyState`) lives in `tf_project.models`. This module
-keeps the on-disk plumbing — locks, slot-relative paths, decrypted-tfvars
-context manager — and re-exports `MyState` for callers that historically
-imported it from here.
+The state *model* (`MyState`) lives in `tf_project.models`. This module owns
+the on-disk side: advisory locks, slot-scoped load/save, active-pointer
+read/write.
 """
 
 from __future__ import annotations
@@ -11,12 +10,12 @@ from __future__ import annotations
 import contextlib
 import os
 import pathlib
+import secrets
 import sys
 from collections.abc import Iterator
 
 from tf_project.config import Config
 from tf_project.models import MyState
-from tf_project.secrets import SecretsProvider
 
 if sys.platform != "win32":
     import fcntl
@@ -98,17 +97,23 @@ def read_active(config: Config) -> str | None:
 def write_active(config: Config, slot: str) -> None:
     """Atomically set the active slot to `slot`.
 
-    Writes to a sibling temp file then `os.replace`s, so a concurrent reader
-    in another shell never observes a half-written pointer (advisory flock
-    alone doesn't protect non-cooperating readers).
+    Writes to a sibling temp file then `Path.replace`s, so a concurrent
+    reader in another shell never observes a half-written pointer
+    (advisory flock alone doesn't protect non-cooperating readers).
+    Tmp suffix is pid + random token to keep cross-container/cross-PID-
+    namespace writes safe. Tmp is unlinked on any in-process error.
     """
     path = config.active_file
     lock_path = path.with_suffix(path.suffix + ".lock")
     with _exclusive_lock(lock_path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}")
-        tmp.write_text(slot + "\n")
-        tmp.replace(path)
+        tmp = path.with_suffix(path.suffix + f".tmp.{os.getpid()}.{secrets.token_hex(4)}")
+        try:
+            tmp.write_text(slot + "\n")
+            tmp.replace(path)
+        except BaseException:
+            tmp.unlink(missing_ok=True)
+            raise
 
 
 def clear_active(config: Config) -> None:
@@ -119,21 +124,9 @@ def clear_active(config: Config) -> None:
         path.unlink(missing_ok=True)
 
 
-# ---- Decrypted-tfvars context manager (kept here for backward import paths) --
-
-
-@contextlib.contextmanager
-def decrypted_tfvars(state: MyState, provider: SecretsProvider) -> Iterator[pathlib.Path]:
-    """Materialise `state.tfvars` through `provider`; yield the decrypted path."""
-    with provider.materialize(state.tfvars) as path:
-        yield path
-
-
 __all__ = [
     "LockBusyError",
-    "MyState",
     "clear_active",
-    "decrypted_tfvars",
     "load_state",
     "read_active",
     "save_state",

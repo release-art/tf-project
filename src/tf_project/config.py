@@ -137,6 +137,26 @@ class Config(BaseModel):
             raise ConfigError(str(exc)) from exc
 
     # ---- Derived paths (slot-scoped) -----------------------------------------
+    #
+    # The on-disk layout under `tmp_dir/` is:
+    #
+    #   tmp/
+    #     active                          # plain text: name of the active slot
+    #     plugin-cache/                   # TF_PLUGIN_CACHE_DIR, shared across slots
+    #     slots/
+    #       <slot>/
+    #         state.json                  # MyState (VersionedModel v1)
+    #         state.json.lock             # POSIX advisory lock for state.json
+    #         backend.hash                # sha of resolved backend_config + source_root
+    #         tfplan                      # saved plan written by `tfp plan`
+    #         tfplan.meta.json            # apply-safety sidecar (VersionedModel v1)
+    #         last.json                   # last terraform invocation (VersionedModel v1)
+    #         apply.lock                  # POSIX flock guarding apply/refresh/destroy
+    #         .terraform/                 # TF_DATA_DIR — providers, modules, backend binding
+    #
+    # The helpers below are the single source of truth for these paths.
+    # Callers MUST go through them rather than building paths by hand, so
+    # the layout is changeable from one place.
 
     @property
     def slots_dir(self) -> pathlib.Path:

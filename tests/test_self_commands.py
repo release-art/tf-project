@@ -73,15 +73,15 @@ def test_self_state_show_requires_active_slot(config: Config) -> None:
         self_commands.do_self_state_show(config, slot=None, all_slots=False)
 
 
-def test_self_state_show_active(config: Config, tfvars: pathlib.Path) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+def test_self_state_show_active(config: Config, save_dev_state) -> None:  # type: ignore[no-untyped-def]
+    save_dev_state()
     out = self_commands.do_self_state_show(config, slot=None, all_slots=False)
     payload = json.loads(out)
     assert payload["slot"] == "dev"
 
 
-def test_self_state_clear_when_present(config: Config, tfvars: pathlib.Path) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+def test_self_state_clear_when_present(config: Config, save_dev_state) -> None:  # type: ignore[no-untyped-def]
+    save_dev_state()
     removed = self_commands.do_self_state_clear(config, slot="dev", all_slots=False)
     assert removed == [config.state_file_for("dev")]
     assert not config.state_file_for("dev").exists()
@@ -147,20 +147,10 @@ def test_self_banner_check_raises_on_invalid(config: Config, tfvars: pathlib.Pat
 
 
 # ---- Helpers / Azure lock ----------------------------------------------------
-
-
-def _save_dev_state(config: Config, *, tfvars: pathlib.Path) -> None:
-    state = MyState(
-        slot="dev",
-        project="demo",
-        tfvars=tfvars,
-        source_root=(config.terraform_dir / "demo").resolve(),
-        tfplan_location=config.tfplan_file_for("dev"),
-        environ={"ARM_SUBSCRIPTION_ID": "abc"},
-        backend_config={"key": "terraform/azure/dev.tfstate"},
-    )
-    save_state(state, config)
-    write_active(config, "dev")
+#
+# Note: the generic "dev" state factory is the `save_dev_state` fixture in
+# conftest.py. The azure/s3 helpers below are kept local because they encode
+# backend-specific default backend_config — too noisy for the shared fixture.
 
 
 def _save_azure_state(

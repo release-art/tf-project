@@ -50,7 +50,7 @@ def test_use_plan_apply_destroy(e2e_config: Config, tfvars: pathlib.Path) -> Non
     (project_dir / "main.tf").write_text(MAIN_TF)
     tfvars.write_text('# {"header":"terraform","project":"demo"}\nvalue = "hello"\n')
 
-    commands.cmd_use(e2e_config, arg="dev")
+    commands.do_use(e2e_config, arg="dev")
     commands.do_plan(e2e_config)
     assert e2e_config.tfplan_file_for("dev").exists()
 

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import sys
 from typing import TYPE_CHECKING
 
 from pydantic import ValidationError
@@ -54,9 +55,13 @@ def find_banner(tfvars: pathlib.Path) -> Banner:
             if not isinstance(data, dict) or data.get("header") != "terraform":
                 continue
             try:
-                return Banner.model_validate(data, context={"tfvars": str(tfvars)})
+                parsed = Banner.model_validate(data)
             except ValidationError as exc:
                 raise BannerError(tfvars, _format_validation_error(exc)) from exc
+            if parsed.model_extra:
+                unknown = ", ".join(sorted(parsed.model_extra))
+                print(f"warning: banner in {tfvars} has unknown fields: {unknown}", file=sys.stderr)
+            return parsed
     raise ProjectInfoNotFoundError(
         f"Project info banner not found in {tfvars}. "
         'Expected a comment line like `# {"header": "terraform", "project": "<name>"}`.'

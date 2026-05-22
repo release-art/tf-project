@@ -2,7 +2,7 @@
 
 Every wrapped command operates against a `ResolvedSlot` (looked up by name
 via the active-slot pointer or `-s` flag) plus the persisted `MyState` from
-that slot. `cmd_use` is the new entry point that replaces the old
+that slot. `do_use` is the new entry point that replaces the old
 `tfp init <tfvars>` flow.
 """
 
@@ -23,7 +23,6 @@ from tf_project.models import MyState, TfplanMeta, ValueModel
 from tf_project.secrets import SecretsProvider, provider_from_config
 from tf_project.slots import ActiveSlot, ResolvedSlot
 from tf_project.state import (
-    decrypted_tfvars,
     load_state,
     save_state,
     try_exclusive_lock,
@@ -32,6 +31,15 @@ from tf_project.state import (
 
 # Subcommands implemented natively below; everything else falls through to
 # `terraform` directly via `do_passthrough`.
+#
+# Invariant maintained between this module and `cli.py`:
+#   - Every entry here MUST have a matching `@app.command(name=...)` in
+#     `cli.py` (or live under a `Typer` sub-app whose top-level name is in
+#     this set, e.g. "state" / "self").
+#   - Anything NOT in this set is forwarded verbatim to `terraform` via
+#     `cli._split_passthrough` → `do_passthrough`.
+# Adding a new wrapped command requires both an entry here AND the matching
+# typer wiring; removing one is the opposite.
 WRAPPED_SUBCOMMANDS: frozenset[str] = frozenset(
     {
         "use",
@@ -91,21 +99,22 @@ def _require_slot_state(config: Config, slot_name: str) -> MyState:
     return state
 
 
-def _resolve_active_slot(config: Config, *, flag: str | None) -> tuple[ResolvedSlot, MyState]:
+def _resolve_active_slot(config: Config, *, flag: str | None) -> tuple[ResolvedSlot, MyState, bool]:
     """Resolve the active slot to its current banner + saved state.
 
-    The saved state is the source of truth for terraform invocations (it
-    captures what was init'd, including env that may have drifted from the
-    current banner). The banner-derived `ResolvedSlot` is consulted by
-    commands that need fresh banner values (e.g. apply-safety checks).
+    Returns ``(resolved, state, banner_present)``. The saved state is the
+    source of truth for terraform invocations (it captures what was
+    init'd, including env that may have drifted from the current banner).
+    The banner-derived `ResolvedSlot` is consulted by commands that need
+    fresh banner values (e.g. apply-safety checks); `banner_present` tells
+    those callers whether `resolved` is in fact derived from a live banner
+    or synthesised from saved state.
     """
     active = _require_active(config, flag=flag)
     state = _require_slot_state(config, active.name)
-    # Best-effort: look up the banner for the slot too. If the tfvars has
-    # been moved/deleted since `tfp use`, fall back to a synthetic
-    # ResolvedSlot built from saved state.
     try:
         resolved = slots_mod.resolve_slot(active.name, config=config)
+        return resolved, state, True
     except slots_mod.SlotError:
         # Banner gone — synthesise from saved state. `project` lives on
         # MyState specifically so this fallback stays accurate.
@@ -119,7 +128,7 @@ def _resolve_active_slot(config: Config, *, flag: str | None) -> tuple[ResolvedS
             backend_config=dict(state.backend_config),
             slot_dir=config.slot_dir_for(state.slot),
         )
-    return resolved, state
+        return resolved, state, False
 
 
 def _provider(config: Config) -> SecretsProvider:
@@ -131,11 +140,7 @@ def _extras(extra: Sequence[str] | None) -> list[str]:
 
 
 def _env_for(config: Config, state: MyState) -> dict[str, str]:
-    return terraform.merged_env(
-        state.environ,
-        data_dir=config.data_dir_for(state.slot),
-        plugin_cache_dir=config.effective_plugin_cache_dir,
-    )
+    return terraform.env_for_slot(config, state)
 
 
 # ---- Apply-safety -------------------------------------------------------------
@@ -180,6 +185,7 @@ def _check_tfplan_fresh(
     state: MyState,
     resolved: ResolvedSlot,
     decrypted: pathlib.Path,
+    banner_present: bool,
 ) -> None:
     meta_path = config.tfplan_meta_for(state.slot)
     if not meta_path.exists():
@@ -192,6 +198,19 @@ def _check_tfplan_fresh(
             f"inputs (sha256 {meta.inputs_sha256[:12]}…) than the current tfvars + .tf source "
             f"(sha256 {actual[:12]}…). Re-run `tfp plan` or use `tfp apply --force`."
         )
+    # The banner-drift comparison only makes sense against a live banner.
+    # If the tfvars has been moved/deleted, `resolved` is synthesised from
+    # the same saved state that `meta` was written against — the comparison
+    # would be tautologically equal and the drift check silently no-ops. We
+    # warn the user explicitly rather than pretend the check ran.
+    if not banner_present:
+        print(
+            f"warning: tfvars banner for slot {state.slot!r} is missing; "
+            "skipping banner-drift check on apply. Re-run `tfp use` once "
+            "the banner is back to revalidate.",
+            file=sys.stderr,
+        )
+        return
     drift = []
     if meta.project != resolved.project:
         drift.append(f"project {meta.project!r} → {resolved.project!r}")
@@ -391,7 +410,7 @@ def _decide_init(config: Config, resolved: ResolvedSlot, terraform_binary: str) 
 # ---- Commands ----------------------------------------------------------------
 
 
-def cmd_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> ResolvedSlot:
+def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> ResolvedSlot:
     """Resolve `arg` to a slot, init if needed, and set it as the active slot.
 
     `arg` is a slot name or a path to a tfvars file. Validates uniqueness
@@ -402,7 +421,7 @@ def cmd_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> 
     validate_uniqueness(config)
     resolved = slots_mod.resolve_slot(arg, config=config)
 
-    if arg != resolved.name and not _is_pure_name(arg):
+    if arg != resolved.name and slots_mod.looks_like_path(arg):
         print(f"resolved {arg} → slot {resolved.name!r}", file=sys.stderr)
 
     decision = _decide_init(config, resolved, config.terraform_binary)
@@ -467,39 +486,36 @@ def validate_uniqueness(config: Config) -> None:
     slots_mod.validate_unique(slots_mod.list_slots(config))
 
 
-def cmd_rm(config: Config, *, slot: str, force: bool, flag_active: str | None = None) -> pathlib.Path:
-    """Remove the on-disk slot directory. Refuses on the active slot unless `force`."""
-    active = slots_mod.resolve_active(config, flag=flag_active)
-    if active is not None and active.name == slot and not force:
-        raise SlotInUseError(
-            f"slot {slot!r} is the active slot ({active.source}). "
+def do_rm(config: Config, *, name: str, force: bool, slot: str | None = None) -> pathlib.Path:
+    """Remove the on-disk slot directory.
+
+    `name` is the slot to remove. `slot` is the (optional) active-slot
+    override used to evaluate the "refuse on active" guard — matches the
+    convention used by every other ``do_*`` in this module.
+    """
+    active = slots_mod.resolve_active(config, flag=slot)
+    if active is not None and active.name == name and not force:
+        raise slots_mod.SlotInUseError(
+            f"slot {name!r} is the active slot ({active.source}). "
             "Pass --force to remove it anyway."
         )
-    slot_dir = config.slot_dir_for(slot)
+    slot_dir = config.slot_dir_for(name)
     if not slot_dir.exists():
-        raise SlotNotFoundError(f"no slot directory at {slot_dir}")
+        raise slots_mod.SlotNotFoundError(f"no slot directory at {slot_dir}")
     shutil.rmtree(slot_dir)
     return slot_dir
-
-
-class SlotInUseError(RuntimeError):
-    """`tfp rm <slot>` blocked because the slot is active."""
-
-
-class SlotNotFoundError(RuntimeError):
-    """`tfp rm <slot>` could not find the slot directory."""
 
 
 def do_plan(
     config: Config,
     *,
-    flag_active: str | None = None,
+    slot: str | None = None,
     targets: Sequence[str] | None = None,
     replaces: Sequence[str] | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
-    resolved, state = _resolve_active_slot(config, flag=flag_active)
-    with decrypted_tfvars(state, _provider(config)) as decrypted:
+    resolved, state, banner_present = _resolve_active_slot(config, flag=slot)
+    with _provider(config).materialize(state.tfvars) as decrypted:
         terraform.run(
             build_plan_argv(
                 config,
@@ -517,13 +533,13 @@ def do_plan(
 def do_apply(
     config: Config,
     *,
-    flag_active: str | None = None,
+    slot: str | None = None,
     force: bool = False,
     extra: Sequence[str] | None = None,
 ) -> None:
-    resolved, state = _resolve_active_slot(config, flag=flag_active)
+    resolved, state, banner_present = _resolve_active_slot(config, flag=slot)
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
-        with decrypted_tfvars(state, _provider(config)) as decrypted:
+        with _provider(config).materialize(state.tfvars) as decrypted:
             if not force:
                 _check_tfplan_fresh(config, state=state, resolved=resolved, decrypted=decrypted)
             terraform.run(
@@ -537,13 +553,13 @@ def do_apply(
 def do_refresh(
     config: Config,
     *,
-    flag_active: str | None = None,
+    slot: str | None = None,
     targets: Sequence[str] | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
-    _, state = _resolve_active_slot(config, flag=flag_active)
+    _, state, _ = _resolve_active_slot(config, flag=slot)
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
-        with decrypted_tfvars(state, _provider(config)) as decrypted:
+        with _provider(config).materialize(state.tfvars) as decrypted:
             terraform.run(
                 build_refresh_argv(
                     config, state=state, var_file=str(decrypted), targets=targets, extra=extra
@@ -555,13 +571,13 @@ def do_refresh(
 def do_destroy(
     config: Config,
     *,
-    flag_active: str | None = None,
+    slot: str | None = None,
     targets: Sequence[str] | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
-    _, state = _resolve_active_slot(config, flag=flag_active)
+    _, state, _ = _resolve_active_slot(config, flag=slot)
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
-        with decrypted_tfvars(state, _provider(config)) as decrypted:
+        with _provider(config).materialize(state.tfvars) as decrypted:
             terraform.run(
                 build_destroy_argv(
                     config, state=state, var_file=str(decrypted), targets=targets, extra=extra
@@ -584,10 +600,10 @@ def do_fmt(config: Config, *, extra: Sequence[str] | None = None) -> None:
 def do_output(
     config: Config,
     *,
-    flag_active: str | None = None,
+    slot: str | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
-    _, state = _resolve_active_slot(config, flag=flag_active)
+    _, state, _ = _resolve_active_slot(config, flag=slot)
     terraform.run(build_output_argv(config, state=state, extra=extra), env=_env_for(config, state))
 
 
@@ -596,11 +612,11 @@ def do_import(
     *,
     address: str,
     resource_id: str,
-    flag_active: str | None = None,
+    slot: str | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
-    _, state = _resolve_active_slot(config, flag=flag_active)
-    with decrypted_tfvars(state, _provider(config)) as decrypted:
+    _, state, _ = _resolve_active_slot(config, flag=slot)
+    with _provider(config).materialize(state.tfvars) as decrypted:
         terraform.run(
             build_import_argv(
                 config,
@@ -619,10 +635,10 @@ def do_state(
     *,
     subcommand: str,
     args: Sequence[str],
-    flag_active: str | None = None,
+    slot: str | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
-    _, state = _resolve_active_slot(config, flag=flag_active)
+    _, state, _ = _resolve_active_slot(config, flag=slot)
     terraform.run(
         build_state_argv(config, state=state, subcommand=subcommand, args=args, extra=extra),
         env=_env_for(config, state),
@@ -633,7 +649,7 @@ def do_passthrough(
     config: Config,
     args: Sequence[str],
     *,
-    flag_active: str | None = None,
+    slot: str | None = None,
 ) -> None:
     """Forward an arbitrary terraform invocation by replacing this process.
 
@@ -641,7 +657,7 @@ def do_passthrough(
     in the loop. Returns only in dry-run mode (or in tests, where
     `exec_passthrough` is mocked).
     """
-    active = slots_mod.resolve_active(config, flag=flag_active)
+    active = slots_mod.resolve_active(config, flag=slot)
     state = load_state(config, active.name) if active is not None else None
     cmd: list[str] = [config.terraform_binary]
     env: dict[str, str] | None = None
@@ -666,8 +682,8 @@ class StatusReport(ValueModel):
     plan_ready: bool = False
 
 
-def status_report(config: Config, *, flag_active: str | None = None) -> StatusReport:
-    active = slots_mod.resolve_active(config, flag=flag_active)
+def status_report(config: Config, *, slot: str | None = None) -> StatusReport:
+    active = slots_mod.resolve_active(config, flag=slot)
     if active is None:
         return StatusReport(initialized=False)
     state = load_state(config, active.name)
@@ -695,19 +711,19 @@ class SlotListing(ValueModel):
     is_active: bool
 
 
-def slot_listing(config: Config, *, flag_active: str | None = None) -> list[SlotListing]:
+def slot_listing(config: Config, *, slot: str | None = None) -> list[SlotListing]:
     import datetime
 
-    active = slots_mod.resolve_active(config, flag=flag_active)
+    active = slots_mod.resolve_active(config, flag=slot)
     active_name = active.name if active is not None else None
     out: list[SlotListing] = []
-    for slot in slots_mod.list_slots(config):
+    for resolved in slots_mod.list_slots(config):
         # A slot is "warm" once `.terraform/providers/` is populated by
         # `terraform init`. That's independent of remote-vs-local backend
         # (remote backends also write `.terraform/terraform.tfstate` as a
         # backend-binding marker, but local backends do not). Show the
         # providers-dir mtime so users can see how stale the init is.
-        marker = slot.data_dir / "providers"
+        marker = resolved.data_dir / "providers"
         warm = marker.is_dir()
         mtime: str | None = None
         if warm:
@@ -715,28 +731,22 @@ def slot_listing(config: Config, *, flag_active: str | None = None) -> list[Slot
             mtime = ts.isoformat(timespec="seconds")
         out.append(
             SlotListing(
-                name=slot.name,
-                project=slot.project,
-                tfvars=slot.tfvars,
-                backend_key=slot.backend_config.get("key"),
+                name=resolved.name,
+                project=resolved.project,
+                tfvars=resolved.tfvars,
+                backend_key=resolved.backend_config.get("key"),
                 warm=warm,
                 warm_mtime=mtime,
-                is_active=(slot.name == active_name),
+                is_active=(resolved.name == active_name),
             )
         )
     return out
 
 
-def _is_pure_name(arg: str) -> bool:
-    return not (arg.endswith(".tfvars") or "/" in arg or "\\" in arg)
-
-
 __all__ = [
     "InitDecision",
     "NoActiveSlotError",
-    "SlotInUseError",
     "SlotListing",
-    "SlotNotFoundError",
     "StaleTfplanError",
     "StateNotInitializedError",
     "StatusReport",
@@ -749,8 +759,8 @@ __all__ = [
     "build_plan_argv",
     "build_refresh_argv",
     "build_state_argv",
-    "cmd_rm",
-    "cmd_use",
+    "do_rm",
+    "do_use",
     "do_apply",
     "do_destroy",
     "do_fmt",

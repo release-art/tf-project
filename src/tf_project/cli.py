@@ -162,7 +162,7 @@ def use(
 ) -> None:
     cfg = _config(ctx)
     try:
-        commands.cmd_use(cfg, arg=target, extra=ctx.args)
+        commands.do_use(cfg, arg=target, extra=ctx.args)
     except slots.SlotConflictError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
@@ -177,7 +177,7 @@ def ls(
     as_json: Annotated[bool, typer.Option("--json", help="Emit JSON instead of a table.")] = False,
 ) -> None:
     cfg = _config(ctx)
-    listing = commands.slot_listing(cfg, flag_active=_slot_flag(ctx))
+    listing = commands.slot_listing(cfg, slot=_slot_flag(ctx))
     orphans = slots.list_orphans(cfg)
     # `ls` is the diagnostic surface — surface duplicate banner slot names
     # here rather than silently dropping the loser of `list_slots` ordering.
@@ -225,8 +225,8 @@ def rm(
 ) -> None:
     cfg = _config(ctx)
     try:
-        removed = commands.cmd_rm(cfg, slot=slot, force=force, flag_active=_slot_flag(ctx))
-    except (commands.SlotInUseError, commands.SlotNotFoundError) as exc:
+        removed = commands.do_rm(cfg, name=slot, force=force, slot=_slot_flag(ctx))
+    except (slots.SlotInUseError, slots.SlotNotFoundError) as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
     typer.echo(f"removed {removed}")
@@ -243,7 +243,7 @@ def plan(
 ) -> None:
     commands.do_plan(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         targets=targets,
         replaces=replaces,
         extra=ctx.args,
@@ -255,7 +255,7 @@ def apply(
     ctx: typer.Context,
     force: Annotated[bool, typer.Option("--force", help="Apply even if plan inputs changed.")] = False,
 ) -> None:
-    commands.do_apply(_config(ctx), flag_active=_slot_flag(ctx), force=force, extra=ctx.args)
+    commands.do_apply(_config(ctx), slot=_slot_flag(ctx), force=force, extra=ctx.args)
 
 
 @app.command(
@@ -264,12 +264,12 @@ def apply(
     help="Apply directly (without a saved plan), optionally targeted.",
 )
 def refresh(ctx: typer.Context, targets: TargetsOption = None) -> None:
-    commands.do_refresh(_config(ctx), flag_active=_slot_flag(ctx), targets=targets, extra=ctx.args)
+    commands.do_refresh(_config(ctx), slot=_slot_flag(ctx), targets=targets, extra=ctx.args)
 
 
 @app.command("destroy", context_settings=PASSTHROUGH_CTX, help="Run `terraform destroy`, optionally targeted.")
 def destroy(ctx: typer.Context, targets: TargetsOption = None) -> None:
-    commands.do_destroy(_config(ctx), flag_active=_slot_flag(ctx), targets=targets, extra=ctx.args)
+    commands.do_destroy(_config(ctx), slot=_slot_flag(ctx), targets=targets, extra=ctx.args)
 
 
 @app.command(
@@ -283,7 +283,7 @@ def fmt(ctx: typer.Context) -> None:
 
 @app.command("output", context_settings=PASSTHROUGH_CTX, help="Print `terraform output -json`.")
 def output(ctx: typer.Context) -> None:
-    commands.do_output(_config(ctx), flag_active=_slot_flag(ctx), extra=ctx.args)
+    commands.do_output(_config(ctx), slot=_slot_flag(ctx), extra=ctx.args)
 
 
 @app.command(
@@ -301,7 +301,7 @@ def import_cmd(
 ) -> None:
     commands.do_import(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         address=address,
         resource_id=resource_id,
         extra=ctx.args,
@@ -325,7 +325,7 @@ def state_list(
 ) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="list",
         args=addresses or [],
         extra=ctx.args,
@@ -339,7 +339,7 @@ def state_show(
 ) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="show",
         args=[address],
         extra=ctx.args,
@@ -354,7 +354,7 @@ def state_mv(
 ) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="mv",
         args=[source, destination],
         extra=ctx.args,
@@ -368,7 +368,7 @@ def state_rm(
 ) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="rm",
         args=addresses,
         extra=ctx.args,
@@ -379,7 +379,7 @@ def state_rm(
 def state_pull(ctx: typer.Context) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="pull",
         args=[],
         extra=ctx.args,
@@ -396,7 +396,7 @@ def state_push(
 ) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="push",
         args=[str(path)],
         extra=ctx.args,
@@ -411,7 +411,7 @@ def state_replace_provider(
 ) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="replace-provider",
         args=[from_provider, to_provider],
         extra=ctx.args,
@@ -425,7 +425,7 @@ def state_identities(
 ) -> None:
     commands.do_state(
         _config(ctx),
-        flag_active=_slot_flag(ctx),
+        slot=_slot_flag(ctx),
         subcommand="identities",
         args=addresses or [],
         extra=ctx.args,
@@ -450,7 +450,7 @@ def last(ctx: typer.Context) -> None:
 
 @app.command("status", help="One-line summary of the active slot.")
 def status(ctx: typer.Context) -> None:
-    report = commands.status_report(_config(ctx), flag_active=_slot_flag(ctx))
+    report = commands.status_report(_config(ctx), slot=_slot_flag(ctx))
     if not report.initialized:
         typer.echo("Not initialized. Run `tfp use <slot>` first.", err=True)
         raise typer.Exit(code=1)
@@ -764,7 +764,7 @@ def main() -> None:
         if is_passthrough:
             cfg = Config.discover()
             migrate.run_if_needed(cfg)
-            commands.do_passthrough(cfg, forwarded, flag_active=passthrough_slot)
+            commands.do_passthrough(cfg, forwarded, slot=passthrough_slot)
             return
         sys.argv = [sys.argv[0], *args]
         app()

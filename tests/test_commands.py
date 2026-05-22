@@ -2,46 +2,20 @@ from __future__ import annotations
 
 import json
 import pathlib
+from collections.abc import Callable
 
 import pytest
 
-from tf_project import commands
+from tf_project import commands, slots
 from tf_project.config import Config
 from tf_project.models import MyState
-from tf_project.state import load_state, save_state, write_active
+from tf_project.state import load_state
 
 
-@pytest.fixture
-def run_calls(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, object]]:
-    calls: list[dict[str, object]] = []
-
-    def fake_run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-        calls.append({"cmd": cmd, "env": env})
-
-    monkeypatch.setattr("tf_project.commands.terraform.run", fake_run)
-    monkeypatch.setattr("tf_project.commands.terraform.exec_passthrough", fake_run)
-    return calls
-
-
-def _save_dev_state(config: Config, *, tfvars: pathlib.Path) -> MyState:
-    state = MyState(
-        slot="dev",
-        project="demo",
-        tfvars=tfvars,
-        source_root=(config.terraform_dir / "demo").resolve(),
-        tfplan_location=config.tfplan_file_for("dev"),
-        environ={"ARM_SUBSCRIPTION_ID": "abc"},
-        backend_config={"key": "terraform/azure/dev.tfstate"},
-    )
-    save_state(state, config)
-    write_active(config, "dev")
-    return state
-
-
-def test_cmd_use_runs_init_and_persists_state(
+def test_do_use_runs_init_and_persists_state(
     config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
 ) -> None:
-    commands.cmd_use(config, arg="dev")
+    commands.do_use(config, arg="dev")
     assert len(run_calls) == 1
     cmd = run_calls[0]["cmd"]
     assert cmd[0] == config.terraform_binary
@@ -56,28 +30,24 @@ def test_cmd_use_runs_init_and_persists_state(
     assert config.active_file.read_text().strip() == "dev"
 
 
-def test_cmd_use_warm_skips_init(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
-) -> None:
-    commands.cmd_use(config, arg="dev")
+def test_do_use_warm_skips_init(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    commands.do_use(config, arg="dev")
     assert len(run_calls) == 1
     # Simulate terraform having written its data-dir marker so the warmth
     # check believes init has run.
     (config.data_dir_for("dev")).mkdir(parents=True, exist_ok=True)
     (config.data_dir_for("dev") / "terraform.tfstate").write_text("{}")
     run_calls.clear()
-    commands.cmd_use(config, arg="dev")
+    commands.do_use(config, arg="dev")
     assert run_calls == []
 
 
-def test_cmd_use_by_path(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
-) -> None:
-    commands.cmd_use(config, arg=str(tfvars))
+def test_do_use_by_path(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    commands.do_use(config, arg=str(tfvars))
     assert config.state_file_for("dev").exists()
 
 
-def test_cmd_use_init_failure_wipes_slot_dir(
+def test_do_use_init_failure_wipes_slot_dir(
     config: Config, tfvars: pathlib.Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from tf_project import terraform as terraform_mod
@@ -87,17 +57,17 @@ def test_cmd_use_init_failure_wipes_slot_dir(
 
     monkeypatch.setattr("tf_project.commands.terraform.run", fake_run)
     with pytest.raises(terraform_mod.TerraformExit):
-        commands.cmd_use(config, arg="dev")
+        commands.do_use(config, arg="dev")
     assert not config.slot_dir_for("dev").exists()
 
 
-def test_cmd_use_reinit_failure_preserves_prior_state(
+def test_do_use_reinit_failure_preserves_prior_state(
     config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Re-init failure must not wipe a previously-good state.json."""
     from tf_project import terraform as terraform_mod
 
-    commands.cmd_use(config, arg="dev")
+    commands.do_use(config, arg="dev")
     state_before = config.state_file_for("dev").read_text()
     # Force re-init by deleting backend.hash so _decide_init returns True.
     config.backend_hash_for("dev").unlink()
@@ -107,16 +77,16 @@ def test_cmd_use_reinit_failure_preserves_prior_state(
 
     monkeypatch.setattr("tf_project.commands.terraform.run", boom)
     with pytest.raises(terraform_mod.TerraformExit):
-        commands.cmd_use(config, arg="dev")
+        commands.do_use(config, arg="dev")
 
     assert config.slot_dir_for("dev").exists()
     assert config.state_file_for("dev").read_text() == state_before
 
 
 def test_plan_targets_and_replaces(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     commands.do_plan(config, targets=["a.b", "c.d"], replaces=["e.f"])
     cmd = run_calls[0]["cmd"]
     env = run_calls[0]["env"]
@@ -134,9 +104,9 @@ def test_plan_targets_and_replaces(
 
 
 def test_apply_uses_saved_plan_and_unlinks(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     plan_path = config.tfplan_file_for("dev")
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_bytes(b"plan")
@@ -147,8 +117,10 @@ def test_apply_uses_saved_plan_and_unlinks(
     assert not plan_path.exists()
 
 
-def test_destroy_targets(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+def test_destroy_targets(
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
+) -> None:
+    save_dev_state()
     commands.do_destroy(config, targets=["x.y"])
     cmd = run_calls[0]["cmd"]
     assert "destroy" in cmd
@@ -168,15 +140,19 @@ def test_output_requires_active_slot(config: Config) -> None:
         commands.do_output(config)
 
 
-def test_state_mv(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+def test_state_mv(
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
+) -> None:
+    save_dev_state()
     commands.do_state(config, subcommand="mv", args=["a.b", "c.d"])
     cmd = run_calls[0]["cmd"]
     assert cmd[-4:] == ["state", "mv", "a.b", "c.d"]
 
 
-def test_do_state_rm(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+def test_do_state_rm(
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
+) -> None:
+    save_dev_state()
     commands.do_state(config, subcommand="rm", args=["aws_s3_bucket.foo", "aws_s3_bucket.bar"])
     cmd = run_calls[0]["cmd"]
     env = run_calls[0]["env"]
@@ -189,9 +165,9 @@ def test_do_state_rm(config: Config, tfvars: pathlib.Path, run_calls: list[dict[
 
 
 def test_do_state_extras_before_positionals(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     commands.do_state(config, subcommand="rm", args=["aws_x.foo"], extra=["-dry-run", "-lock=false"])
     cmd = run_calls[0]["cmd"]
     assert cmd.index("-dry-run") < cmd.index("aws_x.foo")
@@ -203,9 +179,9 @@ def test_state_is_wrapped_not_passthrough() -> None:
 
 
 def test_plan_extra_args_forwarded(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     commands.do_plan(config, extra=["-detailed-exitcode", "-compact-warnings"])
     cmd = run_calls[0]["cmd"]
     assert "-detailed-exitcode" in cmd
@@ -214,9 +190,9 @@ def test_plan_extra_args_forwarded(
 
 
 def test_passthrough_with_state(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     commands.do_passthrough(config, ["validate", "-json"])
     cmd = run_calls[0]["cmd"]
     env = run_calls[0]["env"]
@@ -243,22 +219,20 @@ def _write_banner_tfvars(path: pathlib.Path, banner: dict[str, object]) -> None:
     path.write_text(f'# {json.dumps(banner)}\nfoo = "bar"\n')
 
 
-def test_cmd_use_honours_banner_state_key(
+def test_do_use_honours_banner_state_key(
     config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
 ) -> None:
     _write_banner_tfvars(
         tfvars,
         {"header": "terraform", "project": "demo", "state_key": "shared/global.tfstate"},
     )
-    commands.cmd_use(config, arg="dev")
+    commands.do_use(config, arg="dev")
     state = load_state(config, "dev")
     assert state is not None
     assert state.backend_config == {"key": "shared/global.tfstate"}
 
 
-def test_cmd_use_honours_banner_env(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
-) -> None:
+def test_do_use_honours_banner_env(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
     _write_banner_tfvars(
         tfvars,
         {
@@ -267,21 +241,21 @@ def test_cmd_use_honours_banner_env(
             "env": {"ARM_SUBSCRIPTION_ID": "from-banner", "EXTRA": "x"},
         },
     )
-    commands.cmd_use(config, arg="dev")
+    commands.do_use(config, arg="dev")
     state = load_state(config, "dev")
     assert state is not None
     assert state.environ == {"ARM_SUBSCRIPTION_ID": "from-banner", "EXTRA": "x"}
 
 
-def test_cmd_use_banner_env_replaces_prior(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+def test_do_use_banner_env_replaces_prior(
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     _write_banner_tfvars(
         tfvars,
         {"header": "terraform", "project": "demo", "env": {"NEW_VAR": "y"}},
     )
-    commands.cmd_use(config, arg="dev")
+    commands.do_use(config, arg="dev")
     state = load_state(config, "dev")
     assert state is not None
     # No merge — banner is the source of truth on every `tfp use`.
@@ -293,7 +267,7 @@ def test_banner_invalid_state_key_raises(config: Config, tfvars: pathlib.Path) -
     # Pass the path so resolution goes through find_banner directly and
     # surfaces the validation error rather than silently dropping the slot.
     with pytest.raises(ValueError, match="state_key"):
-        commands.cmd_use(config, arg=str(tfvars))
+        commands.do_use(config, arg=str(tfvars))
 
 
 def test_banner_invalid_env_raises(config: Config, tfvars: pathlib.Path) -> None:
@@ -302,13 +276,13 @@ def test_banner_invalid_env_raises(config: Config, tfvars: pathlib.Path) -> None
         {"header": "terraform", "project": "demo", "env": {"OK": 123}},
     )
     with pytest.raises(ValueError, match="env"):
-        commands.cmd_use(config, arg=str(tfvars))
+        commands.do_use(config, arg=str(tfvars))
 
 
 def test_plan_writes_tfplan_meta(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     commands.do_plan(config)
     meta = config.tfplan_meta_for("dev")
     assert meta.exists()
@@ -319,9 +293,9 @@ def test_plan_writes_tfplan_meta(
 
 
 def test_apply_detects_changed_tf_source(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     src = config.terraform_dir / "demo"
     src.mkdir(parents=True, exist_ok=True)
     (src / "main.tf").write_text('resource "null_resource" "a" {}\n')
@@ -333,9 +307,9 @@ def test_apply_detects_changed_tf_source(
 
 
 def test_apply_rejects_stale_tfplan(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     config.tfplan_file_for("dev").write_bytes(b"plan")
     # Write a meta file claiming the tfplan was generated against different content.
     meta_payload = {
@@ -353,9 +327,9 @@ def test_apply_rejects_stale_tfplan(
 
 
 def test_apply_force_bypasses_stale_guard(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     config.tfplan_file_for("dev").write_bytes(b"plan")
     meta_payload = {
         "schema_version": 1,
@@ -372,9 +346,9 @@ def test_apply_force_bypasses_stale_guard(
 
 
 def test_apply_consumes_fresh_tfplan_meta(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     commands.do_plan(config)
     config.tfplan_file_for("dev").write_bytes(b"plan")
     commands.do_apply(config)
@@ -388,9 +362,9 @@ def test_status_report_uninitialized(config: Config) -> None:
 
 
 def test_status_report_after_init(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     report = commands.status_report(config)
     assert report.initialized is True
     assert report.slot == "dev"
@@ -402,13 +376,13 @@ def test_status_report_after_init(
     assert commands.status_report(config).plan_ready is True
 
 
-def test_cmd_use_passes_backend_config_table(
+def test_do_use_passes_backend_config_table(
     config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
 ) -> None:
     cfg = config.model_copy(
         update={"backend_config": {"resource_group_name": "rg", "storage_account_name": "sa"}},
     )
-    commands.cmd_use(cfg, arg="dev")
+    commands.do_use(cfg, arg="dev")
     cmd = run_calls[0]["cmd"]
     assert isinstance(cmd, list)
     flat = " ".join(cmd)
@@ -417,9 +391,9 @@ def test_cmd_use_passes_backend_config_table(
 
 
 def test_import_forwards_var_file_and_env(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    _save_dev_state(config, tfvars=tfvars)
+    save_dev_state()
     commands.do_import(config, address="aws_s3_bucket.foo", resource_id="my-bucket")
     cmd = run_calls[0]["cmd"]
     env = run_calls[0]["env"]
@@ -435,11 +409,11 @@ def test_import_is_wrapped_not_passthrough() -> None:
 
 
 def test_passthrough_honours_slot_flag(
-    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+    config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
-    """do_passthrough with flag_active resolves env + -chdir from that slot."""
-    _save_dev_state(config, tfvars=tfvars)
-    commands.do_passthrough(config, ["validate"], flag_active="dev")
+    """do_passthrough with slot resolves env + -chdir from that slot."""
+    save_dev_state()
+    commands.do_passthrough(config, ["validate"], slot="dev")
     cmd = run_calls[0]["cmd"]
     env = run_calls[0]["env"]
     assert f"-chdir={config.terraform_dir / 'demo'}" in cmd
@@ -466,25 +440,25 @@ def test_passthrough_uses_exec(monkeypatch: pytest.MonkeyPatch, config: Config) 
 
 
 def test_slot_listing(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
-    commands.cmd_use(config, arg="dev")
+    commands.do_use(config, arg="dev")
     listing = commands.slot_listing(config)
     assert [s.name for s in listing] == ["dev"]
     assert listing[0].is_active is True
     assert listing[0].project == "demo"
 
 
-def test_cmd_rm_refuses_active(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
-    commands.cmd_use(config, arg="dev")
-    with pytest.raises(commands.SlotInUseError):
-        commands.cmd_rm(config, slot="dev", force=False)
+def test_do_rm_refuses_active(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    commands.do_use(config, arg="dev")
+    with pytest.raises(slots.SlotInUseError):
+        commands.do_rm(config, name="dev", force=False)
 
 
-def test_cmd_rm_with_force(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
-    commands.cmd_use(config, arg="dev")
-    commands.cmd_rm(config, slot="dev", force=True)
+def test_do_rm_with_force(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
+    commands.do_use(config, arg="dev")
+    commands.do_rm(config, name="dev", force=True)
     assert not config.slot_dir_for("dev").exists()
 
 
-def test_cmd_rm_unknown(config: Config) -> None:
-    with pytest.raises(commands.SlotNotFoundError):
-        commands.cmd_rm(config, slot="ghost", force=False)
+def test_do_rm_unknown(config: Config) -> None:
+    with pytest.raises(slots.SlotNotFoundError):
+        commands.do_rm(config, name="ghost", force=False)

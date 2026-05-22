@@ -97,16 +97,9 @@ def test_cli_dispatches_use(
     project_tree: pathlib.Path,
     tfvars: pathlib.Path,
     monkeypatch: pytest.MonkeyPatch,
+    write_tfp_toml,  # type: ignore[no-untyped-def]
 ) -> None:
-    (project_tree / "tf_project.toml").write_text(
-        "[tf_project]\n"
-        'terraform_dir = "terraform"\n'
-        'tfvars_dir = "tfvars"\n'
-        'tmp_dir = "tmp"\n'
-        'state_key_prefix = "terraform/azure/"\n\n'
-        "[tf_project.secrets]\n"
-        "command = []\n"
-    )
+    write_tfp_toml(project_tree, state_key_prefix="terraform/azure/")
     monkeypatch.chdir(project_tree)
     calls: list[list[str]] = []
     monkeypatch.setattr(
@@ -177,18 +170,14 @@ def test_strip_global_flags(argv: list[str], want_args: list[str], want_verbose:
     assert dry_run is want_dry_run
 
 
-def test_complete_tfvars_lists_banner_projects(project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_complete_tfvars_lists_banner_projects(
+    project_tree: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_tfp_toml,  # type: ignore[no-untyped-def]
+) -> None:
     import json
 
-    (project_tree / "tf_project.toml").write_text(
-        "[tf_project]\n"
-        'terraform_dir = "terraform"\n'
-        'tfvars_dir = "tfvars"\n'
-        'tmp_dir = "tmp"\n'
-        'state_key_prefix = ""\n\n'
-        "[tf_project.secrets]\n"
-        "command = []\n"
-    )
+    write_tfp_toml(project_tree)
     (project_tree / "tfvars" / "prod.tfvars").write_text(
         f'# {json.dumps({"header": "terraform", "project": "prod-app"})}\nfoo = "bar"\n'
     )
@@ -205,18 +194,14 @@ def test_complete_tfvars_lists_banner_projects(project_tree: pathlib.Path, monke
 
 
 def test_ls_warns_on_slot_conflict(
-    runner: CliRunner, project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+    runner: CliRunner,
+    project_tree: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_tfp_toml,  # type: ignore[no-untyped-def]
 ) -> None:
     import json
 
-    (project_tree / "tf_project.toml").write_text(
-        "[tf_project]\n"
-        'terraform_dir = "terraform"\n'
-        'tfvars_dir = "tfvars"\n'
-        'tmp_dir = "tmp"\n\n'
-        "[tf_project.secrets]\n"
-        "command = []\n"
-    )
+    write_tfp_toml(project_tree)
     # Two tfvars claim the same slot name "dev".
     (project_tree / "tfvars" / "dev-old.tfvars").write_text(
         f'# {json.dumps({"header": "terraform", "project": "demo", "slot": "dev"})}\nfoo="bar"\n'
@@ -227,18 +212,14 @@ def test_ls_warns_on_slot_conflict(
     assert "warning" in result.output or "warning" in (result.stderr or "")
 
 
-def test_complete_slot_lists_slot_names(project_tree: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_complete_slot_lists_slot_names(
+    project_tree: pathlib.Path,
+    monkeypatch: pytest.MonkeyPatch,
+    write_tfp_toml,  # type: ignore[no-untyped-def]
+) -> None:
     import json
 
-    (project_tree / "tf_project.toml").write_text(
-        "[tf_project]\n"
-        'terraform_dir = "terraform"\n'
-        'tfvars_dir = "tfvars"\n'
-        'tmp_dir = "tmp"\n'
-        'state_key_prefix = ""\n\n'
-        "[tf_project.secrets]\n"
-        "command = []\n"
-    )
+    write_tfp_toml(project_tree)
     (project_tree / "tfvars" / "prod.tfvars").write_text(
         f'# {json.dumps({"header": "terraform", "project": "demo", "slot": "production"})}\nfoo = "bar"\n'
     )

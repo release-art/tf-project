@@ -11,15 +11,13 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Iterable
+from typing import TYPE_CHECKING
 
-# Re-exports for backward compatibility — banner parsing lives in
-# `tf_project.banner` but external callers (and existing tests) import it
-# from here.
-from tf_project.banner import (  # noqa: F401
-    BannerError,
-    ProjectInfoNotFoundError,
-)
 from tf_project.models import LastInvocation
+
+if TYPE_CHECKING:
+    from tf_project.config import Config
+    from tf_project.models import MyState
 
 log = logging.getLogger("tf_project.terraform")
 
@@ -136,6 +134,20 @@ def target_args(targets: Iterable[str] | None) -> list[str]:
 
 def replace_args(replaces: Iterable[str] | None) -> list[str]:
     return [f"-replace={r}" for r in (replaces or [])]
+
+
+def env_for_slot(config: "Config", state: "MyState") -> dict[str, str]:
+    """Build the per-spawn env for a wrapped command running against `state`.
+
+    Single source of truth for the layering. Used everywhere a `terraform`
+    subprocess runs under a slot — kept here (rather than in commands.py) so
+    `self_commands.py` and friends don't have to repeat the recipe.
+    """
+    return merged_env(
+        state.environ,
+        data_dir=config.data_dir_for(state.slot),
+        plugin_cache_dir=config.effective_plugin_cache_dir,
+    )
 
 
 def merged_env(

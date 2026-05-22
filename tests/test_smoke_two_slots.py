@@ -57,10 +57,10 @@ def two_slot_config(config: Config, project_tree: pathlib.Path) -> Config:
 def test_warm_slot_switch_does_not_init(two_slot_config: Config) -> None:
     cfg = two_slot_config
 
-    commands.cmd_use(cfg, arg="dev")
+    commands.do_use(cfg, arg="dev")
     assert cfg.data_dir_for("dev").is_dir()
 
-    commands.cmd_use(cfg, arg="prod")
+    commands.do_use(cfg, arg="prod")
     assert cfg.data_dir_for("prod").is_dir()
 
     # Both slots have their own `.terraform/providers/` populated by init.
@@ -71,14 +71,14 @@ def test_warm_slot_switch_does_not_init(two_slot_config: Config) -> None:
     # We detect this via the backend.hash file's mtime — a successful
     # init bumps it, a warm switch doesn't.
     mtime_before = cfg.backend_hash_for("dev").stat().st_mtime
-    commands.cmd_use(cfg, arg="dev")
+    commands.do_use(cfg, arg="dev")
     mtime_after = cfg.backend_hash_for("dev").stat().st_mtime
     assert mtime_after == mtime_before, "warm switch unexpectedly re-initialised the slot"
 
 
 def test_plugin_cache_populated(two_slot_config: Config) -> None:
     cfg = two_slot_config
-    commands.cmd_use(cfg, arg="dev")
+    commands.do_use(cfg, arg="dev")
     # Plugin cache should contain at least one provider directory after init.
     cache = cfg.effective_plugin_cache_dir
     assert cache.is_dir()

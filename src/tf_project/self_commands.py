@@ -8,7 +8,7 @@ import pathlib
 import shutil
 import subprocess
 import tomllib
-from typing import Any, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from tf_project import (
     banner as banner_mod,
@@ -121,7 +121,14 @@ def do_self_config_path(cwd: pathlib.Path) -> pathlib.Path:
 
 
 def do_self_state_show(config: Config, *, slot: str | None, all_slots: bool) -> str:
-    """Print state for the active slot (or `slot` override), or every slot when `all_slots`."""
+    """Print saved-state JSON.
+
+    Precedence:
+      - ``all_slots=True``  → emit a map of {slot_name → state | null} for
+        every slot derived from `tfvars_dir`. `slot` is ignored.
+      - ``slot="name"``     → emit just that slot's state.
+      - ``slot=None``       → use the active slot.
+    """
     if all_slots:
         out: dict[str, Any] = {}
         for s in slots_mod.list_slots(config):
@@ -137,7 +144,10 @@ def do_self_state_show(config: Config, *, slot: str | None, all_slots: bool) -> 
 
 
 def do_self_state_clear(config: Config, *, slot: str | None, all_slots: bool) -> list[pathlib.Path]:
-    """Remove the state file for one or all slots; return the removed paths."""
+    """Remove state files; return the paths that were removed.
+
+    Same `all_slots` / `slot` precedence as :func:`do_self_state_show`.
+    """
     removed: list[pathlib.Path] = []
     if all_slots:
         for s in slots_mod.list_slots(config):
@@ -264,6 +274,17 @@ def do_self_banner_check(config: Config, *, tfvars: pathlib.Path) -> dict[str, A
 
 _TRACE_PLACEHOLDER = "<DECRYPTED_TFVARS>"
 
+TraceSubcommand = Literal["use", "plan", "apply", "refresh", "destroy", "output", "import"]
+TRACE_SUBCOMMANDS: tuple[TraceSubcommand, ...] = (
+    "use",
+    "plan",
+    "apply",
+    "refresh",
+    "destroy",
+    "output",
+    "import",
+)
+
 
 def do_self_trace(
     config: Config,
@@ -279,48 +300,53 @@ def do_self_trace(
     """Return the argv `tfp <subcommand>` would build, without invoking anything."""
     from tf_project import commands  # late import to avoid circular
 
+    if subcommand not in TRACE_SUBCOMMANDS:
+        raise SelfCommandError(
+            f"Unknown subcommand {subcommand!r}. Choose from: {', '.join(TRACE_SUBCOMMANDS)}."
+        )
+
     name = _resolve_slot_name(config, slot=slot)
     state = load_state(config, name)
     if state is None:
         raise SelfCommandError(f"No state for slot {name!r}. Run `tfp use {name}` first.")
 
-    # For the `use`/`init` trace, we need a ResolvedSlot built from the
-    # current banner.
-    try:
-        resolved = slots_mod.resolve_slot(name, config=config)
-    except slots_mod.SlotError as exc:
-        raise SelfCommandError(str(exc)) from exc
+    # `use` traces an init against the *current* banner, so resolve fresh.
+    if subcommand == "use":
+        try:
+            resolved = slots_mod.resolve_slot(name, config=config)
+        except slots_mod.SlotError as exc:
+            raise SelfCommandError(str(exc)) from exc
+        return commands.build_init_argv(config, resolved=resolved, extra=extra)
 
-    builders = {
-        "use": lambda: commands.build_init_argv(config, resolved=resolved, extra=extra),
-        "plan": lambda: commands.build_plan_argv(
-            config,
-            state=state,
-            var_file=_TRACE_PLACEHOLDER,
-            targets=targets,
-            replaces=replaces,
-            extra=extra,
-        ),
-        "apply": lambda: commands.build_apply_argv(config, state=state, var_file=_TRACE_PLACEHOLDER, extra=extra),
-        "refresh": lambda: commands.build_refresh_argv(
-            config, state=state, var_file=_TRACE_PLACEHOLDER, targets=targets, extra=extra
-        ),
-        "destroy": lambda: commands.build_destroy_argv(
-            config, state=state, var_file=_TRACE_PLACEHOLDER, targets=targets, extra=extra
-        ),
-        "output": lambda: commands.build_output_argv(config, state=state, extra=extra),
-        "import": lambda: commands.build_import_argv(
-            config,
-            state=state,
-            var_file=_TRACE_PLACEHOLDER,
-            address=import_address,
-            resource_id=import_id,
-            extra=extra,
-        ),
-    }
-    if subcommand not in builders:
-        raise SelfCommandError(f"Unknown subcommand {subcommand!r}. Choose from: {', '.join(sorted(builders))}.")
-    return builders[subcommand]()
+    var_file = _TRACE_PLACEHOLDER
+    match subcommand:
+        case "plan":
+            return commands.build_plan_argv(
+                config, state=state, var_file=var_file, targets=targets, replaces=replaces, extra=extra
+            )
+        case "apply":
+            return commands.build_apply_argv(config, state=state, var_file=var_file, extra=extra)
+        case "refresh":
+            return commands.build_refresh_argv(
+                config, state=state, var_file=var_file, targets=targets, extra=extra
+            )
+        case "destroy":
+            return commands.build_destroy_argv(
+                config, state=state, var_file=var_file, targets=targets, extra=extra
+            )
+        case "output":
+            return commands.build_output_argv(config, state=state, extra=extra)
+        case "import":
+            return commands.build_import_argv(
+                config,
+                state=state,
+                var_file=var_file,
+                address=import_address,
+                resource_id=import_id,
+                extra=extra,
+            )
+        case _:  # pragma: no cover — already gated by TRACE_SUBCOMMANDS membership
+            raise AssertionError(f"unhandled subcommand {subcommand!r}")
 
 
 # ---- tfp last -----------------------------------------------------------------
@@ -367,11 +393,7 @@ def do_self_snapshot(
             ],
             capture_output=True,
             check=True,
-            env=terraform_mod.merged_env(
-                state.environ,
-                data_dir=config.data_dir_for(state.slot),
-                plugin_cache_dir=config.effective_plugin_cache_dir,
-            ),
+            env=terraform_mod.env_for_slot(config, state),
         )
     except FileNotFoundError as exc:
         raise SelfCommandError(f"{config.terraform_binary}: command not found") from exc
@@ -413,14 +435,7 @@ def do_self_providers_lock(
         "lock",
         *[f"-platform={p}" for p in platforms],
     ]
-    terraform_mod.run(
-        argv,
-        env=terraform_mod.merged_env(
-            state.environ,
-            data_dir=config.data_dir_for(state.slot),
-            plugin_cache_dir=config.effective_plugin_cache_dir,
-        ),
-    )
+    terraform_mod.run(argv, env=terraform_mod.env_for_slot(config, state))
     return argv
 
 
@@ -445,12 +460,13 @@ class BreakResult:
 
 
 def _require_state_or_error(config: Config, slot: str) -> MyState:
-    state = load_state(config, slot)
-    if state is None:
-        raise SelfCommandError(
-            f"No state for slot {slot!r} at {config.state_file_for(slot)}. Run `tfp use {slot}` first."
-        )
-    return state
+    """Adapter: delegate to commands._require_slot_state, re-raising as SelfCommandError."""
+    from tf_project import commands
+
+    try:
+        return commands._require_slot_state(config, slot)
+    except commands.StateNotInitializedError as exc:
+        raise SelfCommandError(str(exc)) from exc
 
 
 def _select_provider(state: MyState) -> lock_mod.LockProvider:
@@ -500,11 +516,7 @@ def do_self_lock_break(config: Config, *, slot: str | None = None, blunt: bool =
                             "-force",
                             report.info.id,
                         ],
-                        env=terraform_mod.merged_env(
-                            state.environ,
-                            data_dir=config.data_dir_for(state.slot),
-                            plugin_cache_dir=config.effective_plugin_cache_dir,
-                        ),
+                        env=terraform_mod.env_for_slot(config, state),
                     )
                 except terraform_mod.TerraformExit:
                     pass
@@ -528,13 +540,13 @@ def do_self_lock_break(config: Config, *, slot: str | None = None, blunt: bool =
 
 
 def _resolve_slot_name(config: Config, *, slot: str | None) -> str:
-    """Resolve the slot name from `--slot` flag or the active-slot pointer."""
-    if slot:
-        return slot
-    active = slots_mod.resolve_active(config, flag=None)
-    if active is None:
-        raise SelfCommandError("No active slot. Run `tfp use <slot>` first (or pass --slot <name>).")
-    return active.name
+    """Adapter: delegate to commands._require_active, re-raising as SelfCommandError."""
+    from tf_project import commands
+
+    try:
+        return commands._require_active(config, flag=slot).name
+    except commands.NoActiveSlotError as exc:
+        raise SelfCommandError(str(exc)) from exc
 
 
 __all__ = [

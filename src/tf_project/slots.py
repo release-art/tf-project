@@ -14,7 +14,6 @@ from typing import Literal
 
 from pydantic import ConfigDict, computed_field
 
-from tf_project import banner as banner_mod
 from tf_project.banner import (
     BannerError,
     ProjectInfoNotFoundError,
@@ -31,6 +30,14 @@ ENV_VAR = "TFP_SLOT"
 
 class SlotError(RuntimeError):
     """A slot-resolution failure surfaced to the CLI."""
+
+
+class SlotInUseError(SlotError):
+    """`tfp rm <slot>` blocked because the slot is active."""
+
+
+class SlotNotFoundError(SlotError):
+    """`tfp rm <slot>` could not find the slot directory on disk."""
 
 
 class SlotConflictError(SlotError):
@@ -131,7 +138,7 @@ def resolve_slot(arg: str, *, config: Config) -> ResolvedSlot:
     `arg` is treated as a path if it contains a path separator or ends in
     `.tfvars`; otherwise as a slot name to look up across `tfvars_dir`.
     """
-    if _looks_like_path(arg):
+    if looks_like_path(arg):
         path = pathlib.Path(arg)
         if not path.is_absolute():
             path = (pathlib.Path.cwd() / path).resolve()
@@ -220,7 +227,12 @@ def assert_slot_exists(config: Config, name: str) -> None:
         raise SlotError(f"no tfvars defines slot {name!r}. Available: {available}")
 
 
-def _looks_like_path(arg: str) -> bool:
+def looks_like_path(arg: str) -> bool:
+    """True if `arg` should be treated as a tfvars path, not a slot name.
+
+    Heuristic: ends in `.tfvars` or contains a path separator. Anything else
+    is interpreted as a slot name and looked up via `list_slots`.
+    """
     return arg.endswith(".tfvars") or "/" in arg or "\\" in arg
 
 
@@ -232,8 +244,9 @@ __all__ = [
     "ResolvedSlot",
     "SlotConflictError",
     "SlotError",
+    "SlotInUseError",
+    "SlotNotFoundError",
     "assert_slot_exists",
-    "banner_mod",
     "list_orphans",
     "list_slots",
     "resolve_active",

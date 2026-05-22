@@ -271,10 +271,25 @@ pdm run pytest -m integration   # smoke tests (need `terraform` on PATH)
 
 ## Release
 
-1. Merge to `main`. CI runs; on success the **Release** workflow triggers.
-2. `Release` builds the wheel, publishes to TestPyPI then PyPI via OIDC
-   trusted publishing, then opens a `pdm bump patch` commit to prepare the
-   next version.
-3. PyPI trusted-publishing setup is a one-time step on
-   `pypi.org → Manage project → Publishing`, tied to this repo and the
-   `release` GitHub Environment.
+Releases are **tag-driven**. The wheel's version comes from the git tag,
+not a code edit — there is no `__version__.py` to bump.
+
+1. Move the `## [Unreleased]` block in `CHANGELOG.md` under a new
+   `## [X.Y.Z] — YYYY-MM-DD` heading. Commit to `main`.
+2. Tag the commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
+3. The **Release** workflow fires on the tag push:
+   - Re-runs CI against the tagged commit.
+   - Builds sdist + wheel with the version pinned from the tag.
+   - Signs both with [Sigstore][sigstore] (keyless, transparency-logged).
+   - Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
+   - Creates a GitHub Release with the extracted changelog section and the
+     signed artifacts (`.whl`, `.tar.gz`, `.sigstore`) attached.
+
+Tags carrying `rc` / `a` / `b` / `dev` suffixes (e.g. `v1.0.0rc1`) are
+auto-marked as pre-releases on GitHub.
+
+PyPI trusted-publishing is a one-time setup on
+`pypi.org → Manage project → Publishing`, tied to this repo and the
+`release` GitHub Environment.
+
+[sigstore]: https://www.sigstore.dev/

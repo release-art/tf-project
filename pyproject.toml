@@ -78,8 +78,13 @@ source-includes = [
 editable-backend = "path"
 
 [tool.pdm.version]
-source = "file"
-path = "src/tf_project/__version__.py"
+# Version is derived from the latest matching git tag at build time.
+# Release tags look like `v1.2.3`; the leading `v` is stripped for PEP 440.
+# Outside a tagged commit (CI on main, local dev), pdm-backend falls back
+# to `fallback_version` so the build still succeeds.
+source = "scm"
+tag_regex = '^v(?P<version>\d+\.\d+\.\d+.*)$'
+fallback_version = "0.0.0.dev0"
 
 [tool.pdm.scripts]
 tf-project = {call = "tf_project.cli:main"}

@@ -6,6 +6,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Release pipeline
+- **Tag-driven releases.** The wheel's version is now derived from the git
+  tag at build time via `pdm-backend`'s SCM source; `src/tf_project/__version__.py`
+  reads the installed distribution's metadata at runtime. No more code-side
+  version bump — push `vX.Y.Z` and the workflow takes over.
+- **Sigstore-signed artifacts.** Every release attaches the `.whl`,
+  `.tar.gz`, and matching `.sigstore` bundles to the GitHub Release.
+- **GitHub Releases automated.** Changelog notes are extracted from
+  `## [X.Y.Z]` sections by `mindsers/changelog-reader-action`; pre-release
+  tags (`rcN`, `aN`, `bN`, `devN`) are auto-flagged.
+- Removed the post-publish `pdm bump patch` step — the next release version
+  is whatever you tag next, not whatever a bot guessed.
+
 ### Added — slot model (BREAKING)
 - **Named slots replace the single-state model.** Each tfvars file is bound
   to a slot whose name defaults to the filename stem and can be overridden

@@ -15,6 +15,7 @@ import sys
 from collections.abc import Sequence
 
 from tf_project import (
+    preflight,
     slots as slots_mod,
     terraform,
 )
@@ -429,6 +430,11 @@ def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> R
         plugin_cache_dir.mkdir(parents=True, exist_ok=True)
 
     if decision.needs_init:
+        warning = preflight.dep_lock_warning(
+            resolved.source_root, plugin_cache_enabled=plugin_cache_dir is not None
+        )
+        if warning is not None:
+            print(f"warning: {warning}", file=sys.stderr)
         print(f"==== PROJECT: {resolved.project} (slot {resolved.name!r}, {decision.reason}) ====")
         try:
             terraform.run(
@@ -508,6 +514,7 @@ def do_plan(
     extra: Sequence[str] | None = None,
 ) -> None:
     resolved, state, banner_present = _resolve_active_slot(config, flag=slot)
+    preflight.check_data_dir(config, state.slot)
     with _provider(config).materialize(state.tfvars) as decrypted:
         terraform.run(
             build_plan_argv(
@@ -531,6 +538,8 @@ def do_apply(
     extra: Sequence[str] | None = None,
 ) -> None:
     resolved, state, banner_present = _resolve_active_slot(config, flag=slot)
+    preflight.check_data_dir(config, state.slot)
+    preflight.check_apply_plan(config, state.slot)
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
         with _provider(config).materialize(state.tfvars) as decrypted:
             if not force:
@@ -557,6 +566,7 @@ def do_refresh(
     extra: Sequence[str] | None = None,
 ) -> None:
     _, state, _ = _resolve_active_slot(config, flag=slot)
+    preflight.check_data_dir(config, state.slot)
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
         with _provider(config).materialize(state.tfvars) as decrypted:
             terraform.run(
@@ -573,6 +583,7 @@ def do_destroy(
     extra: Sequence[str] | None = None,
 ) -> None:
     _, state, _ = _resolve_active_slot(config, flag=slot)
+    preflight.check_data_dir(config, state.slot)
     with try_exclusive_lock(_apply_lock_path(config, state.slot)):
         with _provider(config).materialize(state.tfvars) as decrypted:
             terraform.run(
@@ -599,6 +610,7 @@ def do_output(
     extra: Sequence[str] | None = None,
 ) -> None:
     _, state, _ = _resolve_active_slot(config, flag=slot)
+    preflight.check_data_dir(config, state.slot)
     terraform.run(build_output_argv(config, state=state, extra=extra), env=_env_for(config, state))
 
 
@@ -611,6 +623,7 @@ def do_import(
     extra: Sequence[str] | None = None,
 ) -> None:
     _, state, _ = _resolve_active_slot(config, flag=slot)
+    preflight.check_data_dir(config, state.slot)
     with _provider(config).materialize(state.tfvars) as decrypted:
         terraform.run(
             build_import_argv(
@@ -634,6 +647,7 @@ def do_state(
     extra: Sequence[str] | None = None,
 ) -> None:
     _, state, _ = _resolve_active_slot(config, flag=slot)
+    preflight.check_data_dir(config, state.slot)
     terraform.run(
         build_state_argv(config, state=state, subcommand=subcommand, args=args, extra=extra),
         env=_env_for(config, state),
@@ -667,6 +681,7 @@ def do_passthrough(
         # Use the same helper as the wrapped commands so the error message
         # distinguishes "no such slot" from "slot exists, never inited".
         state = _require_slot_state(config, active.name)
+        preflight.check_data_dir(config, state.slot)
         cmd.append(f"-chdir={state.source_root}")
         env = _env_for(config, state)
     cmd.extend(args)

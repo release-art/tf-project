@@ -11,7 +11,7 @@ import click
 import typer
 from click.shell_completion import CompletionItem
 
-from tf_project import banner, commands, migrate, self_commands, slots, terraform
+from tf_project import banner, commands, migrate, preflight, self_commands, slots, terraform
 from tf_project.__version__ import __version__
 from tf_project.commands import WRAPPED_SUBCOMMANDS
 from tf_project.config import Config, ConfigError
@@ -786,6 +786,9 @@ def main() -> None:
         typer.echo(str(exc), err=True)
         sys.exit(1)
     except commands.StaleTfplanError as exc:
+        typer.echo(str(exc), err=True)
+        sys.exit(1)
+    except preflight.RecoveryError as exc:
         typer.echo(str(exc), err=True)
         sys.exit(1)
     except slots.SlotConflictError as exc:

@@ -4,7 +4,7 @@ Each provider takes a `MyState` and knows how to:
  - report lease/lock status (incl. the terraform lock ID, if recoverable)
  - break the lease at the backend level (blunt path, last resort)
 
-The polite path — `terraform force-unlock <ID>` — lives in commands.py and
+The polite path - `terraform force-unlock <ID>` - lives in commands.py and
 calls into a provider only to discover the lock ID.
 """
 
@@ -243,7 +243,7 @@ def select_provider(state: MyState) -> LockProvider:
         return S3LockProvider(state)
     if "bucket" in bc:
         raise LockProviderError(
-            "S3 backend without `dynamodb_table` — terraform stores no lock for this backend; "
+            "S3 backend without `dynamodb_table` - terraform stores no lock for this backend; "
             "tfp self lock not applicable."
         )
     raise LockProviderError(
@@ -259,7 +259,7 @@ def select_provider(state: MyState) -> LockProvider:
 def _run_cli(argv: list[str]) -> str:
     """Shell out to az / aws / etc., raising LockProviderError with a clean message."""
     try:
-        result = subprocess.run(  # noqa: S603 — explicit invocation, argv validated by callers
+        result = subprocess.run(  # noqa: S603 - explicit invocation, argv validated by callers
             argv,
             capture_output=True,
             text=True,
@@ -272,7 +272,7 @@ def _run_cli(argv: list[str]) -> str:
             "aws": "https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html",
         }.get(cli_name, "")
         msg = f"`{cli_name}` not found on PATH."
-        if hint:  # pragma: no branch — every caller passes "az" or "aws"
+        if hint:  # pragma: no branch - every caller passes "az" or "aws"
             msg += f" Install: {hint}"
         raise LockProviderError(msg) from exc
     except subprocess.CalledProcessError as exc:

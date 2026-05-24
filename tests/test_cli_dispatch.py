@@ -333,7 +333,7 @@ def test_self_state_show_dispatches(
 
 
 def test_self_state_clear_when_absent(runner: CliRunner, in_project: pathlib.Path) -> None:
-    # No active slot — passing --slot explicitly via -s
+    # No active slot - passing --slot explicitly via -s
     result = runner.invoke(app, ["-s", "dev", "self", "state", "clear"])
     assert result.exit_code == 0
     assert "No state file" in result.output
@@ -412,7 +412,7 @@ def test_self_snapshot_dispatches(
         "tf_project.cli.self_commands.do_self_snapshot",
         lambda config, slot=None, dest=None: written,
     )
-    result = runner.invoke(app, ["self", "snapshot"])
+    result = runner.invoke(app, ["self", "snapshot", "create"])
     assert result.exit_code == 0
     assert "snapshot" in result.output
 
@@ -424,7 +424,7 @@ def test_self_snapshot_failure(runner: CliRunner, in_project: pathlib.Path, monk
         raise SelfCommandError("nope")
 
     monkeypatch.setattr("tf_project.cli.self_commands.do_self_snapshot", boom)
-    result = runner.invoke(app, ["self", "snapshot"])
+    result = runner.invoke(app, ["self", "snapshot", "create"])
     assert result.exit_code == 1
 
 

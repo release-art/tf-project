@@ -1,6 +1,6 @@
 """Integration test: switching between two warm slots does not re-init.
 
-Verifies the core ergonomics promise of the slot model — once a slot's
+Verifies the core ergonomics promise of the slot model - once a slot's
 `.terraform/` is populated, `tfp use <slot>` flips the pointer and does
 not spawn `terraform init`.
 """
@@ -64,7 +64,7 @@ def test_warm_slot_switch_does_not_init(two_slot_config: Config) -> None:
     assert (cfg.data_dir_for("prod") / "providers").is_dir()
 
     # Switching back to the warm slot should not call terraform init.
-    # We detect this via the backend.hash file's mtime — a successful
+    # We detect this via the backend.hash file's mtime - a successful
     # init bumps it, a warm switch doesn't.
     mtime_before = cfg.backend_hash_for("dev").stat().st_mtime
     commands.do_use(cfg, arg="dev")

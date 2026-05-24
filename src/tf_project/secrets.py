@@ -16,7 +16,7 @@ from tf_project.config import SecretsConfig
 def _shred(path: pathlib.Path) -> None:
     """Best-effort secure delete: overwrite the file with zeros, then unlink.
 
-    Filesystem semantics limit what "secure" means here — on copy-on-write
+    Filesystem semantics limit what "secure" means here - on copy-on-write
     filesystems (btrfs/zfs/APFS) the original blocks may persist. On ext4
     and tmpfs the bytes are overwritten in place. The unlink at the end is
     the authoritative cleanup; the overwrite is defence in depth.
@@ -68,7 +68,7 @@ class CommandProvider:
                 yield out_path
             finally:
                 # Explicitly shred the decrypted contents before the
-                # tmpdir cleanup runs — the file holds plaintext secrets.
+                # tmpdir cleanup runs - the file holds plaintext secrets.
                 _shred(out_path)
 
 

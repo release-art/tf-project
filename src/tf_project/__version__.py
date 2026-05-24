@@ -16,5 +16,5 @@ from importlib import metadata
 
 try:
     __version__ = metadata.version("tf-project")
-except metadata.PackageNotFoundError:  # pragma: no cover — editable w/o dist
+except metadata.PackageNotFoundError:  # pragma: no cover - editable w/o dist
     __version__ = "0.0.0+unknown"

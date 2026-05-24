@@ -51,6 +51,16 @@ tmp_dir       = "{DEFAULT_TMP_DIR}"
 state_key_prefix = ""
 # terraform_binary = "terraform"       # path or PATH-name; defaults to `which terraform`
 
+# Extra GOOS_GOARCH platforms to include when `tfp use` chases `terraform init`
+# with `terraform providers lock`. linux_amd64, linux_arm64, and the host's
+# own platform are always included; list anything else your team runs on here.
+# extra_lock_platforms = ["windows_amd64", "darwin_amd64"]
+
+# Max number of auto-snapshots kept per slot under <tmp_dir>/snapshots/<slot>/.
+# Each `tfp state rm`/`mv`/`replace-provider`/`import` pulls remote state and
+# writes a snapshot here before mutating. Set to 0 to disable.
+# snapshot_retention = 200
+
 [{_TABLE_PREFIX_PLACEHOLDER}.secrets]
 # Pluggable tfvars preprocessor. Set `command = []` to disable.
 command = {list(DEFAULT_SECRETS_COMMAND)!r}
@@ -229,7 +239,7 @@ def _dir_check(name: str, path: pathlib.Path, *, allow_missing: bool = False) ->
         return DoctorCheck(
             name=f"{name} exists",
             ok=True,
-            detail=f"{path} (missing — will be created on demand)",
+            detail=f"{path} (missing - will be created on demand)",
         )
     return DoctorCheck(name=f"{name} exists", ok=False, detail=str(path))
 
@@ -258,6 +268,8 @@ def _config_to_dict(config: Config) -> dict[str, Any]:
         "terraform_binary": config.terraform_binary,
         "backend_config": dict(config.backend_config),
         "secrets": {"command": list(config.secrets.command)},
+        "extra_lock_platforms": list(config.extra_lock_platforms),
+        "snapshot_retention": config.snapshot_retention,
     }
 
 
@@ -302,7 +314,7 @@ def do_self_trace(
 
     name = _resolve_slot_name(config, slot=slot)
 
-    # `use` traces an init from the current banner — it doesn't read saved
+    # `use` traces an init from the current banner - it doesn't read saved
     # state, so don't require it. Other subcommands need state because their
     # argv depends on saved tfvars / source_root / etc.
     if subcommand == "use":
@@ -339,7 +351,7 @@ def do_self_trace(
                 resource_id=import_id,
                 extra=extra,
             )
-        case _:  # pragma: no cover — already gated by TRACE_SUBCOMMANDS membership
+        case _:  # pragma: no cover - already gated by TRACE_SUBCOMMANDS membership
             raise AssertionError(f"unhandled subcommand {subcommand!r}")
 
 
@@ -360,25 +372,31 @@ def do_last_invocation(config: Config, *, slot: str | None = None) -> dict[str, 
 # ---- tfp self snapshot --------------------------------------------------------
 
 
-def do_self_snapshot(
-    config: Config,
-    *,
-    slot: str | None = None,
-    dest: pathlib.Path | None = None,
-) -> pathlib.Path:
-    """Pull the current remote tfstate to a local file via `terraform state pull`."""
+@dataclasses.dataclass(frozen=True, slots=True)
+class SnapshotEntry:
+    path: pathlib.Path
+    size: int
+    mtime: float
+
+
+def _utc_timestamp() -> str:
+    """UTC timestamp with microsecond resolution so back-to-back snapshots don't collide."""
     import datetime
 
+    return datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%S-%fZ")
+
+
+def _slugify_label(label: str) -> str:
+    """Restrict labels to safe filename characters."""
+    cleaned = "".join(ch if (ch.isalnum() or ch in "-_") else "-" for ch in label)
+    return cleaned.strip("-") or "snapshot"
+
+
+def _pull_remote_state(config: Config, state: MyState) -> bytes:
     from tf_project import terraform as terraform_mod
 
-    name = _resolve_slot_name(config, slot=slot)
-    state = _require_state_or_error(config, name)
-    if dest is None:
-        ts = datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        dest = config.tmp_dir / f"snapshot-{ts}.tfstate"
-    dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        result = subprocess.run(  # noqa: S603 — explicit invocation
+        result = subprocess.run(  # noqa: S603 - explicit invocation
             [
                 config.terraform_binary,
                 f"-chdir={state.source_root}",
@@ -394,8 +412,140 @@ def do_self_snapshot(
     except subprocess.CalledProcessError as exc:
         detail = (exc.stderr.decode("utf-8", "replace") or "").strip() or f"exit {exc.returncode}"
         raise SelfCommandError(f"terraform state pull failed: {detail}") from exc
-    dest.write_bytes(result.stdout)
+    return result.stdout
+
+
+def _prune_snapshots(snapshots_dir: pathlib.Path, *, keep: int) -> int:
+    """Delete oldest snapshots so at most `keep` remain. Returns count pruned."""
+    if keep <= 0 or not snapshots_dir.is_dir():
+        return 0
+    entries = sorted(
+        (p for p in snapshots_dir.glob("*.tfstate") if p.is_file()),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    victims = entries[keep:]
+    for victim in victims:
+        try:
+            victim.unlink()
+        except OSError:
+            # Best-effort: a snapshot we can't delete is annoying but not
+            # worth failing the parent op for.
+            continue
+    return len(victims)
+
+
+def _write_snapshot(config: Config, state: MyState, *, label: str) -> pathlib.Path:
+    """Pull remote tfstate and write to the per-slot snapshots dir, pruning to retention."""
+    dest_dir = config.snapshots_dir_for(state.slot)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{_utc_timestamp()}-{_slugify_label(label)}.tfstate"
+    dest.write_bytes(_pull_remote_state(config, state))
+    _prune_snapshots(dest_dir, keep=config.snapshot_retention)
     return dest
+
+
+def auto_snapshot(config: Config, state: MyState, *, op: str) -> pathlib.Path | None:
+    """Auto-snapshot the remote tfstate before a state-mutating wrapped op.
+
+    Returns the snapshot path, or None if disabled via
+    `snapshot_retention = 0` in the config. Raises `SelfCommandError` if
+    `terraform state pull` fails - by design, a missing safety net should
+    abort the destructive op rather than silently proceed.
+    """
+    if config.snapshot_retention <= 0:
+        return None
+    return _write_snapshot(config, state, label=f"pre-{op}")
+
+
+def do_self_snapshot(
+    config: Config,
+    *,
+    slot: str | None = None,
+    dest: pathlib.Path | None = None,
+) -> pathlib.Path:
+    """Pull the current remote tfstate to a local file via `terraform state pull`.
+
+    With `dest=None` the snapshot is written into the per-slot snapshots dir
+    and counts toward retention; with an explicit `dest` it goes wherever the
+    caller asked and retention is not touched.
+    """
+    name = _resolve_slot_name(config, slot=slot)
+    state = _require_state_or_error(config, name)
+    if dest is None:
+        return _write_snapshot(config, state, label="manual")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(_pull_remote_state(config, state))
+    return dest
+
+
+def do_self_snapshot_list(config: Config, *, slot: str | None = None) -> list[SnapshotEntry]:
+    """Return snapshots for the slot, newest first."""
+    name = _resolve_slot_name(config, slot=slot)
+    _require_state_or_error(config, name)  # consistency with the other self-snapshot ops
+    snapshots_dir = config.snapshots_dir_for(name)
+    if not snapshots_dir.is_dir():
+        return []
+    entries = []
+    for path in snapshots_dir.glob("*.tfstate"):
+        if not path.is_file():
+            continue
+        stat = path.stat()
+        entries.append(SnapshotEntry(path=path, size=stat.st_size, mtime=stat.st_mtime))
+    entries.sort(key=lambda e: e.mtime, reverse=True)
+    return entries
+
+
+def do_self_snapshot_restore(
+    config: Config,
+    *,
+    slot: str | None = None,
+    name: str | None = None,
+) -> pathlib.Path:
+    """Push a saved snapshot back to the remote backend via `terraform state push -force`.
+
+    `name` selects a specific snapshot (basename or stem inside the per-slot
+    snapshots dir). With `name=None` the most recent snapshot is restored.
+    Raises `SelfCommandError` if no snapshots exist or the named one is missing.
+    """
+    from tf_project import terraform as terraform_mod
+
+    slot_name = _resolve_slot_name(config, slot=slot)
+    state = _require_state_or_error(config, slot_name)
+    entries = do_self_snapshot_list(config, slot=slot_name)
+    if not entries:
+        raise SelfCommandError(
+            f"No snapshots to restore for slot {slot_name!r}. "
+            f"Run `tfp self snapshot create` or perform a state-mutating op first."
+        )
+    if name is None:
+        target = entries[0].path
+    else:
+        candidates = [e.path for e in entries if e.path.name == name or e.path.stem == name]
+        if not candidates:
+            raise SelfCommandError(
+                f"No snapshot named {name!r} for slot {slot_name!r}. "
+                f"Available: {', '.join(e.path.name for e in entries[:5])}" + (" ..." if len(entries) > 5 else "")
+            )
+        target = candidates[0]
+    try:
+        subprocess.run(  # noqa: S603 - explicit invocation
+            [
+                config.terraform_binary,
+                f"-chdir={state.source_root}",
+                "state",
+                "push",
+                "-force",
+                str(target),
+            ],
+            check=True,
+            env=terraform_mod.env_for_slot(config, state),
+        )
+    except FileNotFoundError as exc:
+        raise SelfCommandError(f"{config.terraform_binary}: command not found") from exc
+    except subprocess.CalledProcessError as exc:
+        raise SelfCommandError(f"terraform state push failed (exit {exc.returncode})") from exc
+    return target
 
 
 # ---- tfp self providers lock --------------------------------------------------
@@ -409,26 +559,19 @@ def do_self_providers_lock(
 ) -> list[str]:
     """Run `terraform providers lock` across the given platforms.
 
-    Recommended set (`linux_amd64`, `linux_arm64`, `darwin_amd64`,
-    `darwin_arm64`) when called with `platforms=None`.
+    Defaults to `linux_amd64` + `linux_arm64` plus the host's platform
+    when called with `platforms=None`.
     """
     from tf_project import terraform as terraform_mod
+    from tf_project.commands import build_providers_lock_argv
 
     name = _resolve_slot_name(config, slot=slot)
     state = _require_state_or_error(config, name)
-    platforms = platforms or [
-        "linux_amd64",
-        "linux_arm64",
-        "darwin_amd64",
-        "darwin_arm64",
-    ]
-    argv = [
-        config.terraform_binary,
-        f"-chdir={state.source_root}",
-        "providers",
-        "lock",
-        *[f"-platform={p}" for p in platforms],
-    ]
+    argv = build_providers_lock_argv(
+        config,
+        source_root=state.source_root,
+        platforms=platforms,
+    )
     terraform_mod.run(argv, env=terraform_mod.env_for_slot(config, state))
     return argv
 
@@ -500,7 +643,7 @@ def do_self_lock_break(config: Config, *, slot: str | None = None, blunt: bool =
     if not blunt:
         # Polite path: try terraform force-unlock first if we can discover a
         # lock ID. If status itself fails (e.g. CLI auth blip), fall through
-        # to the blunt break — the user asked for the lock to go away.
+        # to the blunt break - the user asked for the lock to go away.
         try:
             report = provider.status()
         except lock_mod.LockProviderError:
@@ -526,7 +669,7 @@ def do_self_lock_break(config: Config, *, slot: str | None = None, blunt: bool =
                     env=terraform_mod.env_for_slot(config, state),
                 )
             except terraform_mod.TerraformExit:
-                # terraform itself failed — fall through to blunt break.
+                # terraform itself failed - fall through to blunt break.
                 pass
             else:
                 return BreakResult(
@@ -568,8 +711,12 @@ __all__ = [
     "do_self_init",
     "do_self_lock_break",
     "do_self_lock_status",
+    "SnapshotEntry",
+    "auto_snapshot",
     "do_self_providers_lock",
     "do_self_snapshot",
+    "do_self_snapshot_list",
+    "do_self_snapshot_restore",
     "do_self_state_clear",
     "do_self_state_show",
     "do_self_trace",

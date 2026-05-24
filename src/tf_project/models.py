@@ -5,7 +5,7 @@ field. Each subclass declares its `SUPPORTED_VERSION` class var and (optionally)
 overrides `migrate` to transform older payloads forward.
 
 In-memory value objects (resolver results, decisions) also live here when they
-benefit from pydantic validation, but they subclass `ValueModel` instead — same
+benefit from pydantic validation, but they subclass `ValueModel` instead - same
 strictness, no schema versioning.
 """
 
@@ -83,7 +83,7 @@ class VersionedModel(PersistedModel):
         """Atomically write the model to `path` as pretty-printed JSON.
 
         Writes to a sibling temp file in the same directory, then
-        `Path.replace`s over `path` — readers either see the old content or
+        `Path.replace`s over `path` - readers either see the old content or
         the new, never a half-written file (even on SIGINT mid-write).
 
         The tmp suffix combines pid + random token so concurrent writers on
@@ -160,7 +160,7 @@ class TfplanMeta(VersionedModel):
     `inputs_sha256` is the rolling hash over the decrypted tfvars and every
     `.tf` under source_root (so module edits invalidate the plan too).
     `project`, `state_key`, `backend_config`, `env` snapshot the
-    banner-derived targeting at plan-time — banner-only edits that change
+    banner-derived targeting at plan-time - banner-only edits that change
     the apply target invalidate the plan even if tfvars/.tf are unchanged.
     """
 

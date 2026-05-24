@@ -169,6 +169,38 @@ def test_backend_config_bad_type_raises(tmp_path: pathlib.Path) -> None:
         Config.discover(tmp_path)
 
 
+def test_extra_lock_platforms_loaded(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+        extra_lock_platforms = ["windows_amd64", "freebsd_amd64"]
+        """,
+    )
+    cfg = Config.discover(tmp_path)
+    assert cfg.extra_lock_platforms == ("windows_amd64", "freebsd_amd64")
+
+
+def test_extra_lock_platforms_default_empty(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(tmp_path, '[tf_project]\nterraform_dir = "infra"\n')
+    cfg = Config.discover(tmp_path)
+    assert cfg.extra_lock_platforms == ()
+
+
+def test_extra_lock_platforms_rejects_malformed(tmp_path: pathlib.Path) -> None:
+    _write_tf_project_toml(
+        tmp_path,
+        """
+        [tf_project]
+        terraform_dir = "infra"
+        extra_lock_platforms = ["Windows AMD64"]
+        """,
+    )
+    with pytest.raises(ConfigError, match="extra_lock_platforms"):
+        Config.discover(tmp_path)
+
+
 def test_bad_secrets_command_raises(tmp_path: pathlib.Path) -> None:
     _write_tf_project_toml(
         tmp_path,

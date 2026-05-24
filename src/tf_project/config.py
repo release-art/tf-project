@@ -8,11 +8,12 @@ against the project root at load time, so every `Path` reachable from
 from __future__ import annotations
 
 import pathlib
+import re
 import shutil
 import tomllib
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 CONFIG_FILE_NAME = "tf_project.toml"
 PYPROJECT_FILE_NAME = "pyproject.toml"
@@ -23,6 +24,8 @@ DEFAULT_TERRAFORM_DIR = "terraform"
 DEFAULT_TFVARS_DIR = "tfvars"
 DEFAULT_TMP_DIR = "tmp"
 DEFAULT_TERRAFORM_BINARY = "terraform"
+
+_PLATFORM_RE = re.compile(r"[a-z0-9]+_[a-z0-9]+")
 
 DEFAULT_SECRETS_COMMAND: tuple[str, ...] = (
     "op",
@@ -65,6 +68,25 @@ class Config(BaseModel):
     secrets: SecretsConfig = Field(default_factory=SecretsConfig)
     plugin_cache_dir: pathlib.Path | None = None
     plugin_cache_disabled: bool = False
+    extra_lock_platforms: tuple[str, ...] = ()
+    snapshot_retention: int = Field(default=200, ge=0)
+
+    @field_validator("extra_lock_platforms", mode="before")
+    @classmethod
+    def _validate_extra_lock_platforms(cls, value: Any) -> tuple[str, ...]:
+        if value is None:
+            return ()
+        if isinstance(value, str) or not hasattr(value, "__iter__"):
+            raise ValueError("`extra_lock_platforms` must be a list of GOOS_GOARCH strings")
+        out: list[str] = []
+        for item in value:
+            if not isinstance(item, str) or not _PLATFORM_RE.fullmatch(item):
+                raise ValueError(
+                    f"`extra_lock_platforms` entries must look like `<goos>_<goarch>` "
+                    f"(e.g. windows_amd64); got {item!r}"
+                )
+            out.append(item)
+        return tuple(out)
 
     # ---- Discovery -----------------------------------------------------------
 
@@ -111,7 +133,7 @@ class Config(BaseModel):
 
     @classmethod
     def _from_table(cls, table: dict[str, Any], *, project_root: pathlib.Path) -> "Config":
-        if not isinstance(table, dict):  # pragma: no cover — defensive, tomllib already returns dicts for tables
+        if not isinstance(table, dict):  # pragma: no cover - defensive, tomllib already returns dicts for tables
             raise ConfigError("tf_project config table must be a TOML table")
 
         project_root = project_root.resolve()
@@ -152,7 +174,7 @@ class Config(BaseModel):
     #         tfplan.meta.json            # apply-safety sidecar (VersionedModel v1)
     #         last.json                   # last terraform invocation (VersionedModel v1)
     #         apply.lock                  # POSIX flock guarding apply/refresh/destroy
-    #         .terraform/                 # TF_DATA_DIR — providers, modules, backend binding
+    #         .terraform/                 # TF_DATA_DIR - providers, modules, backend binding
     #
     # The helpers below are the single source of truth for these paths.
     # Callers MUST go through them rather than building paths by hand, so
@@ -197,6 +219,9 @@ class Config(BaseModel):
 
     def last_invocation_for(self, slot: str) -> pathlib.Path:
         return self.slot_dir_for(slot) / "last.json"
+
+    def snapshots_dir_for(self, slot: str) -> pathlib.Path:
+        return self.tmp_dir / "snapshots" / slot
 
 
 # ---- Helpers ------------------------------------------------------------------

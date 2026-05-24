@@ -6,7 +6,7 @@
 
 A thin, opinionated **Terraform / OpenTofu** wrapper for multi-environment
 projects. Provides a single `tf-project` (aka `tfp`) CLI built around
-**named slots** — each tfvars file binds to a slot, and switching between
+**named slots** - each tfvars file binds to a slot, and switching between
 slots is a pointer write, not a re-`terraform init`.
 
 If you maintain one tfvars per environment (`dev.tfvars`, `staging.tfvars`,
@@ -17,14 +17,14 @@ time you switch, this tool replaces that ritual with `tfp use dev`.
   tfvars files. `tfp use dev` flips the active slot; `tfp plan` / `tfp apply`
   operate against it.
 - **One `.terraform/` per slot** via `TF_DATA_DIR`. Two slots pointing at the
-  same project keep independent provider/module/backend bindings on disk —
+  same project keep independent provider/module/backend bindings on disk -
   swapping between them is instant when both are warm.
 - **Shared provider cache** via `TF_PLUGIN_CACHE_DIR`. Providers download
   once and link into every slot's `.terraform/providers/`.
 - **Versioned, pydantic-validated state files.** Every persisted JSON carries
   `schema_version`; unknown fields fail loudly (except in user-authored
   banners, where they are tolerated and logged).
-- Pluggable tfvars preprocessing — defaults to [1Password's `op inject`][op]
+- Pluggable tfvars preprocessing - defaults to [1Password's `op inject`][op]
   so you can keep `op://...` references in tfvars committed to git.
 
 [op]: https://developer.1password.com/docs/cli/secrets-template-syntax/
@@ -44,8 +44,8 @@ cd path/to/your-terraform-repo
 tfp self init
 ```
 
-This drops a `tf_project.toml` at the repo root, or — if a `pyproject.toml`
-is already present — appends a `[tool.tf_project]` section to it. It refuses
+This drops a `tf_project.toml` at the repo root, or - if a `pyproject.toml`
+is already present - appends a `[tool.tf_project]` section to it. It refuses
 to overwrite an existing config.
 
 You can also write the file yourself:
@@ -105,7 +105,7 @@ Banner fields:
 | `backend_config` | JSON object of extra `-backend-config k=v` pairs. Wins over the config-level `[tf_project.backend_config]` table.                |
 
 Unknown banner fields are tolerated (forward-compatible across tfp versions)
-but logged to stderr — so a typo doesn't disappear silently.
+but logged to stderr - so a typo doesn't disappear silently.
 
 ## Usage
 
@@ -139,13 +139,13 @@ tfp last                        # last terraform invocation for the active slot
 
 ### Choosing the active slot
 
-Three precedence levels — the most specific wins:
+Three precedence levels - the most specific wins:
 
 | Source             | Wins over    | Lifetime                                  |
 | ------------------ | ------------ | ----------------------------------------- |
 | `-s/--slot <name>` | everything   | single invocation only (does NOT save)    |
 | `TFP_SLOT=<name>`  | saved file   | current shell                             |
-| `tmp/active` file  | —            | persistent until next `tfp use`           |
+| `tmp/active` file  | -            | persistent until next `tfp use`           |
 
 ```sh
 tfp -s prod plan                # one-off, doesn't touch the saved active
@@ -155,9 +155,9 @@ tfp use prod                    # writes tmp/active (affects all shells without 
 
 ### Global flags
 
-- `--verbose` — echo the terraform argv to stderr before exec.
-- `--dry-run` — print the argv and skip execution.
-- `-s/--slot <name>` — operate against a specific slot for one invocation.
+- `--verbose` - echo the terraform argv to stderr before exec.
+- `--dry-run` - print the argv and skip execution.
+- `-s/--slot <name>` - operate against a specific slot for one invocation.
 
 ```sh
 tfp --dry-run plan -t module.foo
@@ -171,14 +171,29 @@ tfp -s prod --verbose apply
 slot's `.terraform/providers/`, so the second slot's first init is seconds.
 
 The trade-off: `TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE=1` is set so
-Terraform tolerates the cache's missing per-platform hashes. The first time
-your code is init'd on a new platform, the `.terraform.lock.hcl` will only
-record that platform's hashes. To pre-populate hashes for CI platforms you
-don't run on locally, run:
+Terraform tolerates the cache's missing per-platform hashes. To keep
+`.terraform.lock.hcl` portable across machines, every `tfp use` that runs
+`terraform init` chases it with `terraform providers lock` for
+`linux_amd64` + `linux_arm64` (the common CI / runtime targets) plus the
+host's own platform - so on an Apple Silicon Mac you get three sets of
+hashes (the two Linux ones + `darwin_arm64`), on Linux you just get the
+two Linux ones, etc.
+
+Teams that span multiple host platforms can extend the auto-lock set via
+`tf_project.toml` so everyone's hashes land in the same lockfile regardless
+of who ran `tfp use` last:
+
+```toml
+[tf_project]
+# linux_amd64, linux_arm64, and the host's own platform are always included;
+# anything listed here is added on top.
+extra_lock_platforms = ["windows_amd64", "darwin_amd64"]
+```
+
+To re-lock against a custom platform set (e.g. add `windows_amd64`):
 
 ```sh
-tfp self providers lock                                    # default: linux/darwin × amd64/arm64
-tfp self providers lock -p linux_amd64 -p windows_amd64    # custom platform set
+tfp self providers lock -p linux_amd64 -p windows_amd64
 ```
 
 Disable the cache by setting `plugin_cache_dir = ""` in the config.
@@ -196,9 +211,9 @@ tfp force-unlock <LOCK_ID>      # backend-agnostic, via terraform passthrough
 
 `tfp self lock` auto-detects the backend from the active slot's saved state:
 
-- **azurerm** — `storage_account_name` + `container_name` present. Shells out
+- **azurerm** - `storage_account_name` + `container_name` present. Shells out
   to `az storage blob`.
-- **s3** — `bucket` + `dynamodb_table` present. Shells out to `aws dynamodb`.
+- **s3** - `bucket` + `dynamodb_table` present. Shells out to `aws dynamodb`.
 
 Both need the respective CLI installed and authenticated.
 
@@ -206,6 +221,29 @@ Both need the respective CLI installed and authenticated.
 runs `terraform force-unlock <ID>` first, falling back to a backend-level
 lease break only if the polite path fails. Pass `--blunt` to skip terraform
 entirely.
+
+### Auto-snapshot before state-mutating ops
+
+`tfp state rm`, `tfp state mv`, `tfp state replace-provider`, and `tfp
+import` each run `terraform state pull` first and save the result to
+`<tmp_dir>/snapshots/<slot>/<ts>-pre-<op>.tfstate` before the mutating
+command runs. If the pull fails (auth blip, network) the whole op aborts -
+no point destroying state you can't roll back to. Recovery:
+
+```sh
+tfp self snapshot list
+tfp self snapshot restore               # newest, with confirmation
+tfp self snapshot restore <name> -y     # specific snapshot, no prompt
+```
+
+Restoration uses `terraform state push -force`, which overwrites the
+remote state regardless of serial - by definition you're undoing a change,
+so the serial check is exactly what you want to skip.
+
+The retention budget is `snapshot_retention` in `tf_project.toml` (default
+**200** per slot, pruned newest-first on every write). Set it to `0` to
+disable auto-snapshotting entirely; `tfp self snapshot create` still works
+either way.
 
 ### Apply safety
 
@@ -248,7 +286,9 @@ tfp self state clear                # delete the active slot's saved state
 tfp self state clear --all          # nuke every slot's saved state
 tfp self doctor                     # sanity-check the environment (PATH, dirs, slot uniqueness, orphans)
 tfp self banner check <tfvars>      # validate a banner; print resolved slot + fields
-tfp self snapshot                   # `terraform state pull` to <tmp_dir>/snapshot-<ts>.tfstate
+tfp self snapshot create            # `terraform state pull` to <tmp_dir>/snapshots/<slot>/<ts>-manual.tfstate
+tfp self snapshot list              # list snapshots for the active slot, newest first
+tfp self snapshot restore [<name>]  # `terraform state push -force` the named snapshot (default: newest)
 tfp self trace <subcommand>         # print the argv tfp would build; no exec
 tfp self lock status                # remote-state lock state (azurerm or s3+dynamodb)
 tfp self lock break                 # polite-by-default release; --blunt skips terraform
@@ -281,12 +321,12 @@ pdm run pytest -m integration   # smoke tests (need `terraform` on PATH)
 ## Release
 
 Releases are **tag-driven**. The wheel's version comes from the git tag,
-not a code edit — `src/tf_project/__version__.py` exists but reads the
+not a code edit - `src/tf_project/__version__.py` exists but reads the
 installed distribution's metadata at runtime; there is nothing in code to
 bump.
 
 1. Move the `## [Unreleased]` block in `CHANGELOG.md` under a new
-   `## [X.Y.Z] — YYYY-MM-DD` heading. Commit to `main`.
+   `## [X.Y.Z] - YYYY-MM-DD` heading. Commit to `main`.
 2. Tag the commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. The **Release** workflow fires on the tag push:
    - Re-runs CI against the tagged commit.

@@ -85,7 +85,7 @@ def test_legacy_state_non_string_environ_caught(config: Config, tfvars: pathlib.
         "tfvars": str(tfvars),
         "source_root": str(config.terraform_dir / "demo"),
         "tfplan_location": str(config.tmp_dir / "my.tfplan"),
-        "environ": {"X": 1},  # int instead of str — would have crashed before
+        "environ": {"X": 1},  # int instead of str - would have crashed before
         "backend_config": {},
     }
     import json as _json

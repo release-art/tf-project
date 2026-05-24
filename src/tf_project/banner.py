@@ -81,7 +81,7 @@ def resolve_backend_config(
          (only if `state_key_prefix` is set).
       2. `[tf_project.backend_config]` from config.
       3. `backend_config` from the banner.
-      4. `state_key` from the banner — final word on `key`.
+      4. `state_key` from the banner - final word on `key`.
     """
     merged: dict[str, str] = {}
     if config.state_key_prefix:

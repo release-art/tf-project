@@ -112,7 +112,7 @@ def exec_passthrough(cmd: list[str], *, env: dict[str, str] | None = None) -> No
     """Replace this process with a terraform invocation.
 
     Used for the bare passthrough path so signal handling and exit code are
-    fully native — no Python in the loop.
+    fully native - no Python in the loop.
     """
     _announce(cmd)
     if _options.dry_run:
@@ -140,7 +140,7 @@ def env_for_slot(config: "Config", state: "MyState") -> dict[str, str]:
     """Build the per-spawn env for a wrapped command running against `state`.
 
     Single source of truth for the layering. Used everywhere a `terraform`
-    subprocess runs under a slot — kept here (rather than in commands.py) so
+    subprocess runs under a slot - kept here (rather than in commands.py) so
     `self_commands.py` and friends don't have to repeat the recipe.
     """
     return merged_env(

@@ -72,6 +72,9 @@ def save_dev_state(config: Config, tfvars: pathlib.Path) -> Callable[..., MyStat
         state = MyState(**defaults)  # type: ignore[arg-type]
         save_state(state, config)
         write_active(config, state.slot)
+        # Simulate the `.terraform/` data dir that a real `tfp use` would
+        # have left behind, so preflight checks consider the slot warm.
+        config.data_dir_for(state.slot).mkdir(parents=True, exist_ok=True)
         return state
 
     return _make

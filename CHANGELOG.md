@@ -4,6 +4,17 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Recovery preflight.** Wrapped commands now bail out with an actionable
+  message when on-disk state is half-deleted, instead of forwarding a
+  cryptic terraform error: a missing `.terraform/` data dir tells the user
+  to `tfp use <slot>`, and a half-deleted `tfplan`/`tfplan.meta.json` pair
+  tells the user to re-run `tfp plan`. `tfp use` additionally warns when
+  `.terraform.lock.hcl` is missing while the plugin cache is on, pointing
+  at `tfp self providers lock` to repopulate cross-platform hashes.
+
 ## [0.2.0] — 2026-05-22
 
 ### Release pipeline

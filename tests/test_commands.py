@@ -110,7 +110,11 @@ def test_apply_uses_saved_plan_and_unlinks(
     plan_path = config.tfplan_file_for("dev")
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_bytes(b"plan")
-    commands.do_apply(config)
+    # Companion sidecar — `tfp plan` always writes both, and preflight
+    # rejects a half-deleted pair. `--force` skips the drift check itself
+    # but the file's presence is what preflight asserts on.
+    config.tfplan_meta_for("dev").write_text("{}")
+    commands.do_apply(config, force=True)
     cmd = run_calls[0]["cmd"]
     assert "apply" in cmd
     assert str(plan_path) in cmd

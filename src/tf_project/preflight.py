@@ -50,9 +50,7 @@ def check_apply_plan(config: Config, slot: str) -> None:
     plan = config.tfplan_file_for(slot)
     meta = config.tfplan_meta_for(slot)
     if not plan.exists() and not meta.exists():
-        raise RecoveryError(
-            f"slot {slot!r}: no saved tfplan at {plan}. Run `tfp plan` first."
-        )
+        raise RecoveryError(f"slot {slot!r}: no saved tfplan at {plan}. Run `tfp plan` first.")
     if plan.exists() != meta.exists():
         present = plan if plan.exists() else meta
         missing = meta if plan.exists() else plan

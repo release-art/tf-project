@@ -430,9 +430,7 @@ def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> R
         plugin_cache_dir.mkdir(parents=True, exist_ok=True)
 
     if decision.needs_init:
-        warning = preflight.dep_lock_warning(
-            resolved.source_root, plugin_cache_enabled=plugin_cache_dir is not None
-        )
+        warning = preflight.dep_lock_warning(resolved.source_root, plugin_cache_enabled=plugin_cache_dir is not None)
         if warning is not None:
             print(f"warning: {warning}", file=sys.stderr)
         print(f"==== PROJECT: {resolved.project} (slot {resolved.name!r}, {decision.reason}) ====")

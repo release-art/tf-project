@@ -150,7 +150,7 @@ def test_self_banner_check_raises_on_invalid(config: Config, tfvars: pathlib.Pat
 #
 # Note: the generic "dev" state factory is the `save_dev_state` fixture in
 # conftest.py. The azure/s3 helpers below are kept local because they encode
-# backend-specific default backend_config — too noisy for the shared fixture.
+# backend-specific default backend_config - too noisy for the shared fixture.
 
 
 def _save_azure_state(
@@ -283,7 +283,9 @@ def test_self_snapshot_writes_to_default_dest(
     monkeypatch.setattr("tf_project.self_commands.subprocess.run", lambda *a, **kw: R())
     dest = self_commands.do_self_snapshot(config)
     assert dest.read_bytes() == b"snapshot-bytes"
-    assert dest.name.startswith("snapshot-") and dest.name.endswith(".tfstate")
+    # New layout: <tmp_dir>/snapshots/<slot>/<ts>-manual.tfstate
+    assert dest.parent == config.snapshots_dir_for("dev")
+    assert dest.name.endswith("-manual.tfstate")
 
 
 def test_self_snapshot_terraform_missing(
@@ -320,18 +322,151 @@ def test_self_snapshot_terraform_failure(
         self_commands.do_self_snapshot(config)
 
 
+def _mock_state_pull(monkeypatch: pytest.MonkeyPatch, payload: bytes = b"snap") -> None:
+    class R:
+        stdout = payload
+        stderr = b""
+        returncode = 0
+
+    monkeypatch.setattr("tf_project.self_commands.subprocess.run", lambda *a, **kw: R())
+
+
+def test_self_snapshot_list_returns_newest_first(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_dev_state()
+    _mock_state_pull(monkeypatch)
+    first = self_commands.do_self_snapshot(config)
+    # Bump mtime forward so ordering is stable on fast filesystems.
+    import os
+    import time
+
+    os.utime(first, (time.time() - 10, time.time() - 10))
+    second = self_commands.do_self_snapshot(config)
+    entries = self_commands.do_self_snapshot_list(config)
+    assert [e.path for e in entries] == [second, first]
+
+
+def test_self_snapshot_list_empty_for_fresh_slot(
+    config: Config, tfvars: pathlib.Path, save_dev_state
+) -> None:
+    save_dev_state()
+    assert self_commands.do_self_snapshot_list(config) == []
+
+
+def test_self_snapshot_retention_prunes_oldest(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = config.model_copy(update={"snapshot_retention": 3})
+    save_dev_state()
+    _mock_state_pull(monkeypatch)
+    # Use _write_snapshot directly with stable, distinct mtimes so ordering
+    # is deterministic regardless of fs timestamp granularity.
+    import os
+
+    created: list[pathlib.Path] = []
+    for i in range(5):
+        p = self_commands._write_snapshot(cfg, save_dev_state(), label=f"op{i}")
+        os.utime(p, (i * 10, i * 10))
+        created.append(p)
+    remaining = sorted(p.name for p in config.snapshots_dir_for("dev").glob("*.tfstate"))
+    assert len(remaining) == 3
+    # The 3 newest (created[2], [3], [4]) survive.
+    survivors = {p.name for p in created[2:]}
+    assert set(remaining) == survivors
+
+
+def test_auto_snapshot_disabled_when_retention_zero(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
+) -> None:
+    cfg = config.model_copy(update={"snapshot_retention": 0})
+    state = save_dev_state()
+    # Must NOT call terraform - passing no monkeypatch means subprocess.run
+    # would hit the real binary if invoked.
+    assert self_commands.auto_snapshot(cfg, state, op="state-rm") is None
+
+
+def test_self_snapshot_restore_defaults_to_newest(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_dev_state()
+    _mock_state_pull(monkeypatch)
+    older = self_commands.do_self_snapshot(config)
+    import os
+    import time
+
+    os.utime(older, (time.time() - 10, time.time() - 10))
+    newer = self_commands.do_self_snapshot(config)
+    captured: list[list[str]] = []
+
+    class R:
+        returncode = 0
+
+    def fake_run(argv: list[str], **kw: object) -> object:
+        captured.append(argv)
+        return R()
+
+    monkeypatch.setattr("tf_project.self_commands.subprocess.run", fake_run)
+    restored = self_commands.do_self_snapshot_restore(config)
+    assert restored == newer
+    assert captured and captured[0][2:5] == ["state", "push", "-force"]
+    assert captured[0][-1] == str(newer)
+
+
+def test_self_snapshot_restore_named(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,  # type: ignore[no-untyped-def]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    save_dev_state()
+    _mock_state_pull(monkeypatch)
+    older = self_commands.do_self_snapshot(config)
+    self_commands.do_self_snapshot(config)  # newer; should NOT be picked
+
+    class R:
+        returncode = 0
+
+    monkeypatch.setattr("tf_project.self_commands.subprocess.run", lambda *a, **kw: R())
+    restored = self_commands.do_self_snapshot_restore(config, name=older.stem)
+    assert restored == older
+
+
+def test_self_snapshot_restore_no_snapshots(
+    config: Config, tfvars: pathlib.Path, save_dev_state
+) -> None:
+    save_dev_state()
+    with pytest.raises(self_commands.SelfCommandError, match="No snapshots"):
+        self_commands.do_self_snapshot_restore(config)
+
+
 def test_self_providers_lock_default_platforms(
     config: Config,
     tfvars: pathlib.Path,
     save_dev_state,
     monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
 ) -> None:
+    from tf_project import commands as commands_mod
+
     save_dev_state()
     calls: list[list[str]] = []
     monkeypatch.setattr("tf_project.terraform.run", lambda cmd, env=None: calls.append(cmd))
     argv = self_commands.do_self_providers_lock(config)
-    assert any("-platform=linux_amd64" in a for a in argv)
-    assert any("-platform=darwin_arm64" in a for a in argv)
+    assert "-platform=linux_amd64" in argv
+    assert "-platform=linux_arm64" in argv
+    # Host platform is included on non-linux hosts (e.g. darwin_arm64 on macOS).
+    assert f"-platform={commands_mod.current_terraform_platform()}" in argv
     assert calls and calls[0] == argv
 
 
@@ -346,6 +481,21 @@ def test_self_providers_lock_custom_platforms(
     argv = self_commands.do_self_providers_lock(config, platforms=["linux_amd64"])
     assert "-platform=linux_amd64" in argv
     assert not any("darwin" in a for a in argv)
+
+
+def test_self_providers_lock_dedupes_user_duplicates(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state,
+    monkeypatch: pytest.MonkeyPatch,  # type: ignore[no-untyped-def]
+) -> None:
+    save_dev_state()
+    monkeypatch.setattr("tf_project.terraform.run", lambda cmd, env=None: None)
+    argv = self_commands.do_self_providers_lock(
+        config, platforms=["linux_amd64", "linux_arm64", "linux_amd64"]
+    )
+    assert argv.count("-platform=linux_amd64") == 1
+    assert argv.count("-platform=linux_arm64") == 1
 
 
 def test_self_trace_use_does_not_require_saved_state(config: Config, tfvars: pathlib.Path) -> None:

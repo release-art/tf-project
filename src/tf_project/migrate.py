@@ -56,7 +56,7 @@ def run_if_needed(config: Config) -> MigrationResult:
             config,
             legacy_state,
             f"legacy state references missing tfvars {tfvars_path}; "
-            "removing legacy file — run `tfp use <slot>` to start fresh",
+            "removing legacy file - run `tfp use <slot>` to start fresh",
         )
 
     try:
@@ -68,7 +68,7 @@ def run_if_needed(config: Config) -> MigrationResult:
     source_root = (config.terraform_dir / banner.project).resolve()
     backend_config = banner_mod.resolve_backend_config(banner, tfvars=tfvars_path, config=config)
 
-    # Refuse if a slot dir already exists with content — a partial earlier
+    # Refuse if a slot dir already exists with content - a partial earlier
     # upgrade or manual setup. Don't clobber.
     slot_dir = config.slot_dir_for(slot_name)
     if slot_dir.exists() and any(slot_dir.iterdir()):
@@ -80,7 +80,7 @@ def run_if_needed(config: Config) -> MigrationResult:
         )
     slot_dir.mkdir(parents=True, exist_ok=True)
 
-    # Sanitise the legacy environ — older versions may have stashed
+    # Sanitise the legacy environ - older versions may have stashed
     # non-string values that pydantic's `dict[str, str]` will reject.
     raw_environ = raw.get("environ") or {}
     if not isinstance(raw_environ, dict):
@@ -105,7 +105,7 @@ def run_if_needed(config: Config) -> MigrationResult:
             environ=environ,
             backend_config=backend_config,
         )
-    except Exception as exc:  # noqa: BLE001 — surface any construction failure cleanly  # pragma: no cover — upstream guards make this defensive
+    except Exception as exc:  # noqa: BLE001 - surface any construction failure cleanly  # pragma: no cover - upstream guards make this defensive
         return _abort(config, legacy_state, f"could not construct MyState from legacy ({exc})")
     state.dump_file(config.state_file_for(slot_name))
 
@@ -115,7 +115,7 @@ def run_if_needed(config: Config) -> MigrationResult:
         legacy_plan.replace(config.tfplan_file_for(slot_name))
     legacy_meta = config.tmp_dir / (LEGACY_TFPLAN_FILENAME + ".meta.json")
     if legacy_meta.exists():
-        legacy_meta.unlink()  # old shape, drop it — apply-safety re-derives on next plan
+        legacy_meta.unlink()  # old shape, drop it - apply-safety re-derives on next plan
 
     write_active(config, slot_name)
     legacy_state.unlink(missing_ok=True)

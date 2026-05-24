@@ -37,7 +37,11 @@ def config(project_tree: pathlib.Path) -> Config:
         state_key_prefix="terraform/azure/",
         terraform_binary="terraform",
         backend_config={},
-        secrets=SecretsConfig(command=()),  # noop — don't shell out to `op` in tests
+        secrets=SecretsConfig(command=()),  # noop - don't shell out to `op` in tests
+        # Auto-snapshot is opt-in for tests: it shells out to terraform via
+        # subprocess.run (not terraform.run), which the run_calls fixture
+        # doesn't capture. Tests that want to exercise it set this explicitly.
+        snapshot_retention=0,
     )
 
 

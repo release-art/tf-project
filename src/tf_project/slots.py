@@ -159,7 +159,7 @@ def resolve_slot(arg: str, *, config: Config) -> ResolvedSlot:
 def list_slots(config: Config) -> list[ResolvedSlot]:
     """All slots derived from `tfvars_dir/*.tfvars` banners, sorted by name.
 
-    Files without a banner or with a malformed banner are skipped silently —
+    Files without a banner or with a malformed banner are skipped silently -
     `tfp self banner check` is the diagnostic surface for those.
     """
     if not config.tfvars_dir.is_dir():

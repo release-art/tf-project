@@ -2,7 +2,7 @@
 actionable recovery messages.
 
 Catches things like a deleted `.terraform/` data dir or a half-deleted
-`tfplan`/`tfplan.meta.json` pair — situations where terraform would
+`tfplan`/`tfplan.meta.json` pair - situations where terraform would
 otherwise exit with a cryptic error and the user wouldn't know which
 `tfp` command repairs the state.
 
@@ -13,8 +13,6 @@ sidecar files.
 """
 
 from __future__ import annotations
-
-import pathlib
 
 from tf_project.config import Config
 
@@ -60,29 +58,8 @@ def check_apply_plan(config: Config, slot: str) -> None:
         )
 
 
-def dep_lock_warning(source_root: pathlib.Path, *, plugin_cache_enabled: bool) -> str | None:
-    """Return a heads-up if the dependency lock file is missing.
-
-    Not a hard error: terraform will regenerate `.terraform.lock.hcl` on
-    init. But with the plugin cache enabled the regenerated file only
-    carries hashes for the current platform, so we nudge the user to
-    re-run `tfp self providers lock` afterwards to repopulate the
-    cross-platform hashes they previously had.
-    """
-    lock = source_root / ".terraform.lock.hcl"
-    if lock.exists() or not plugin_cache_enabled:
-        return None
-    return (
-        f".terraform.lock.hcl is missing under {source_root}. Terraform will "
-        f"regenerate it during init, but because the plugin cache is enabled "
-        f"the new file will only carry hashes for the current platform. Run "
-        f"`tfp self providers lock` afterwards to repopulate cross-platform hashes."
-    )
-
-
 __all__ = [
     "RecoveryError",
     "check_apply_plan",
     "check_data_dir",
-    "dep_lock_warning",
 ]

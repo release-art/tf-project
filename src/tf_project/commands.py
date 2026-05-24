@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import pathlib
+import platform
 import shutil
 import sys
 from collections.abc import Sequence
@@ -29,6 +30,44 @@ from tf_project.state import (
     try_exclusive_lock,
     write_active,
 )
+
+# Linux is always locked (the most common CI/runtime target) regardless of
+# where `tfp` is invoked. The host platform is added on top so the lockfile
+# also covers wherever the user is running locally (e.g. darwin_arm64 on an
+# Apple Silicon Mac). Override with `tfp self providers lock -p <plat>` for
+# anything else (windows_amd64, freebsd_amd64, ...).
+_BASE_LOCK_PLATFORMS: tuple[str, ...] = ("linux_amd64", "linux_arm64")
+
+_GOOS_BY_SYS_PLATFORM = {"linux": "linux", "darwin": "darwin", "win32": "windows"}
+_GOARCH_BY_MACHINE = {
+    "x86_64": "amd64",
+    "AMD64": "amd64",
+    "amd64": "amd64",
+    "arm64": "arm64",
+    "aarch64": "arm64",
+}
+
+
+def current_terraform_platform() -> str:
+    """Return the GOOS_GOARCH string terraform uses for the host."""
+    goos = _GOOS_BY_SYS_PLATFORM.get(sys.platform, sys.platform)
+    goarch = _GOARCH_BY_MACHINE.get(platform.machine(), platform.machine().lower())
+    return f"{goos}_{goarch}"
+
+
+def default_lock_platforms(extras: Sequence[str] = ()) -> tuple[str, ...]:
+    """Linux amd64 + arm64, plus the host platform, plus any configured extras.
+
+    Order is stable (base, host, extras) with duplicates removed so that a
+    user listing e.g. `darwin_arm64` in `extra_lock_platforms` from a Linux
+    machine still produces a deterministic argv.
+    """
+    out: list[str] = list(_BASE_LOCK_PLATFORMS)
+    for plat in (current_terraform_platform(), *extras):
+        if plat not in out:
+            out.append(plat)
+    return tuple(out)
+
 
 # Subcommands implemented natively below; everything else falls through to
 # `terraform` directly via `do_passthrough`.
@@ -116,7 +155,7 @@ def _resolve_active_slot(config: Config, *, flag: str | None) -> tuple[ResolvedS
         resolved = slots_mod.resolve_slot(active.name, config=config)
         return resolved, state, True
     except slots_mod.SlotError:
-        # Banner gone — synthesise from saved state. `project` lives on
+        # Banner gone - synthesise from saved state. `project` lives on
         # MyState specifically so this fallback stays accurate.
         resolved = ResolvedSlot(
             name=state.slot,
@@ -200,7 +239,7 @@ def _check_tfplan_fresh(
         )
     # The banner-drift comparison only makes sense against a live banner.
     # If the tfvars has been moved/deleted, `resolved` is synthesised from
-    # the same saved state that `meta` was written against — the comparison
+    # the same saved state that `meta` was written against - the comparison
     # would be tautologically equal and the drift check silently no-ops. We
     # warn the user explicitly rather than pretend the check ran.
     if not banner_present:
@@ -247,6 +286,25 @@ def build_init_argv(
     for key, value in resolved.backend_config.items():
         cmd.extend(["-backend-config", f"{key}={value}"])
     return cmd
+
+
+def build_providers_lock_argv(
+    config: Config,
+    *,
+    source_root: pathlib.Path,
+    platforms: Sequence[str] | None = None,
+) -> list[str]:
+    raw = platforms if platforms is not None else default_lock_platforms(config.extra_lock_platforms)
+    # Dedupe while preserving order: a user passing `-p linux_amd64 -p linux_amd64`
+    # or whose extras overlap the defaults shouldn't generate duplicate flags.
+    plats = list(dict.fromkeys(raw))
+    return [
+        config.terraform_binary,
+        f"-chdir={source_root}",
+        "providers",
+        "lock",
+        *[f"-platform={p}" for p in plats],
+    ]
 
 
 def build_plan_argv(
@@ -430,31 +488,33 @@ def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> R
         plugin_cache_dir.mkdir(parents=True, exist_ok=True)
 
     if decision.needs_init:
-        warning = preflight.dep_lock_warning(resolved.source_root, plugin_cache_enabled=plugin_cache_dir is not None)
-        if warning is not None:
-            print(f"warning: {warning}", file=sys.stderr)
         print(f"==== PROJECT: {resolved.project} (slot {resolved.name!r}, {decision.reason}) ====")
+        init_env = terraform.merged_env(
+            resolved.env,
+            data_dir=resolved.data_dir,
+            plugin_cache_dir=plugin_cache_dir,
+        )
         try:
             terraform.run(
                 build_init_argv(config, resolved=resolved, extra=extra),
-                env=terraform.merged_env(
-                    resolved.env,
-                    data_dir=resolved.data_dir,
-                    plugin_cache_dir=plugin_cache_dir,
-                ),
+                env=init_env,
+            )
+            terraform.run(
+                build_providers_lock_argv(config, source_root=resolved.source_root),
+                env=init_env,
             )
         except terraform.TerraformExit:
             # On first-init failure, wipe the partially-created slot dir so
             # a retry starts clean. On re-init failure (slot already had a
             # previously-good state), keep the existing state.json /
-            # backend.hash intact — the user can still operate on the
+            # backend.hash intact - the user can still operate on the
             # last-known-good init while diagnosing.
             if first_init:
                 shutil.rmtree(resolved.slot_dir, ignore_errors=True)
             else:
                 print(
                     f"init failed; slot {resolved.name!r} retains its previous "
-                    "saved state — fix the cause and re-run `tfp use`.",
+                    "saved state - fix the cause and re-run `tfp use`.",
                     file=sys.stderr,
                 )
             raise
@@ -488,7 +548,7 @@ def do_rm(config: Config, *, name: str, force: bool, slot: str | None = None) ->
     """Remove the on-disk slot directory.
 
     `name` is the slot to remove. `slot` is the (optional) active-slot
-    override used to evaluate the "refuse on active" guard — matches the
+    override used to evaluate the "refuse on active" guard - matches the
     convention used by every other ``do_*`` in this module.
     """
     active = slots_mod.resolve_active(config, flag=slot)
@@ -620,8 +680,11 @@ def do_import(
     slot: str | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
+    from tf_project.self_commands import auto_snapshot
+
     _, state, _ = _resolve_active_slot(config, flag=slot)
     preflight.check_data_dir(config, state.slot)
+    auto_snapshot(config, state, op="import")
     with _provider(config).materialize(state.tfvars) as decrypted:
         terraform.run(
             build_import_argv(
@@ -636,6 +699,9 @@ def do_import(
         )
 
 
+STATE_MUTATING_SUBCOMMANDS: frozenset[str] = frozenset({"rm", "mv", "replace-provider"})
+
+
 def do_state(
     config: Config,
     *,
@@ -644,8 +710,12 @@ def do_state(
     slot: str | None = None,
     extra: Sequence[str] | None = None,
 ) -> None:
+    from tf_project.self_commands import auto_snapshot
+
     _, state, _ = _resolve_active_slot(config, flag=slot)
     preflight.check_data_dir(config, state.slot)
+    if subcommand in STATE_MUTATING_SUBCOMMANDS:
+        auto_snapshot(config, state, op=f"state-{subcommand}")
     terraform.run(
         build_state_argv(config, state=state, subcommand=subcommand, args=args, extra=extra),
         env=_env_for(config, state),
@@ -660,7 +730,7 @@ def do_passthrough(
 ) -> None:
     """Forward an arbitrary terraform invocation by replacing this process.
 
-    Uses `os.execvpe` so signals and exit code are fully native — no Python
+    Uses `os.execvpe` so signals and exit code are fully native - no Python
     in the loop. Returns only in dry-run mode (or in tests, where
     `exec_passthrough` is mocked).
 

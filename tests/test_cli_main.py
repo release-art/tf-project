@@ -1,4 +1,4 @@
-"""Tests for `cli.main()` — the top-level dispatcher and error funnel.
+"""Tests for `cli.main()` - the top-level dispatcher and error funnel.
 
 These tests invoke `main()` directly with a monkey-patched `sys.argv` and
 assert the resulting `SystemExit` code. They exercise the long error-catch
@@ -25,7 +25,7 @@ def in_project(project_tree: pathlib.Path, write_tfp_toml, monkeypatch: pytest.M
 def _run_main(monkeypatch: pytest.MonkeyPatch, argv: list[str]) -> int:
     """Invoke cli.main() with the given argv (just args, no program name).
 
-    Returns the SystemExit code (0 if no exit was raised — typer.Exit(0)
+    Returns the SystemExit code (0 if no exit was raised - typer.Exit(0)
     on success surfaces as SystemExit(0)).
     """
     monkeypatch.setattr("sys.argv", ["tfp", *argv])
@@ -195,7 +195,7 @@ def test_main_no_config_at_all(tmp_path: pathlib.Path, monkeypatch: pytest.Monke
     """No tf_project.toml anywhere → ConfigNotFoundError swallowed by main, app surfaces it."""
     monkeypatch.chdir(tmp_path)
     code = _run_main(monkeypatch, ["plan"])
-    # ConfigNotFoundError is a ConfigError subclass — main catches and exits 1.
+    # ConfigNotFoundError is a ConfigError subclass - main catches and exits 1.
     assert code == 1
 
 

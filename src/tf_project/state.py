@@ -19,7 +19,7 @@ from tf_project.models import MyState
 
 if sys.platform != "win32":
     import fcntl
-else:  # pragma: no cover — Windows path
+else:  # pragma: no cover - Windows path
     fcntl = None  # type: ignore[assignment]
 
 

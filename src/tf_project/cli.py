@@ -42,7 +42,7 @@ def _cli_state(ctx: typer.Context) -> _CliState:
 
 def _config(ctx: typer.Context) -> Config:
     state = _cli_state(ctx)
-    if state.config is None:  # pragma: no branch — cached path only reachable across multiple in-process calls
+    if state.config is None:  # pragma: no branch - cached path only reachable across multiple in-process calls
         state.config = Config.discover()
         migrate.run_if_needed(state.config)
     return state.config
@@ -179,7 +179,7 @@ def ls(
     cfg = _config(ctx)
     listing = commands.slot_listing(cfg, slot=_slot_flag(ctx))
     orphans = slots.list_orphans(cfg)
-    # `ls` is the diagnostic surface — surface duplicate banner slot names
+    # `ls` is the diagnostic surface - surface duplicate banner slot names
     # here rather than silently dropping the loser of `list_slots` ordering.
     try:
         slots.validate_unique(slots.list_slots(cfg))
@@ -601,12 +601,23 @@ def self_banner_check(
     typer.echo(json.dumps(summary, indent=2, sort_keys=True))
 
 
-@self_app.command("snapshot", help="Pull the remote tfstate to a local file via `terraform state pull`.")
-def self_snapshot(
+self_snapshot_app = typer.Typer(
+    name="snapshot",
+    help="Manage remote-tfstate snapshots (auto-saved before state-mutating ops).",
+    no_args_is_help=True,
+)
+self_app.add_typer(self_snapshot_app, name="snapshot")
+
+
+@self_snapshot_app.command(
+    "create",
+    help="Pull the remote tfstate to a local file via `terraform state pull`.",
+)
+def self_snapshot_create(
     ctx: typer.Context,
     dest: Annotated[
         pathlib.Path | None,
-        typer.Option("--dest", help="Output path. Defaults to <tmp_dir>/snapshot-<UTC-timestamp>.tfstate."),
+        typer.Option("--dest", help="Output path. Defaults to <tmp_dir>/snapshots/<slot>/<UTC-timestamp>-manual.tfstate."),
     ] = None,
 ) -> None:
     try:
@@ -617,9 +628,63 @@ def self_snapshot(
     typer.echo(f"Wrote snapshot to {written}")
 
 
+@self_snapshot_app.command("list", help="List snapshots for the slot, newest first.")
+def self_snapshot_list(ctx: typer.Context) -> None:
+    try:
+        entries = self_commands.do_self_snapshot_list(_config(ctx), slot=_slot_flag(ctx))
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if not entries:
+        typer.echo("(no snapshots)")
+        return
+    for entry in entries:
+        typer.echo(f"{entry.path.name}\t{entry.size}\t{entry.path}")
+
+
+@self_snapshot_app.command(
+    "restore",
+    help="Push a saved snapshot back to the remote backend via `terraform state push -force`.",
+)
+def self_snapshot_restore(
+    ctx: typer.Context,
+    name: Annotated[
+        str | None,
+        typer.Argument(help="Snapshot filename or stem. Defaults to the most recent."),
+    ] = None,
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip the confirmation prompt."),
+    ] = False,
+) -> None:
+    cfg = _config(ctx)
+    slot = _slot_flag(ctx)
+    try:
+        entries = self_commands.do_self_snapshot_list(cfg, slot=slot)
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    if not entries:
+        typer.echo("(no snapshots to restore)", err=True)
+        raise typer.Exit(code=1)
+    target_name = name or entries[0].path.name
+    if not yes:
+        typer.confirm(
+            f"Restore snapshot {target_name!r} to the remote backend? "
+            f"This will OVERWRITE the live tfstate.",
+            abort=True,
+        )
+    try:
+        restored = self_commands.do_self_snapshot_restore(cfg, slot=slot, name=name)
+    except self_commands.SelfCommandError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from exc
+    typer.echo(f"Restored {restored}")
+
+
 @self_providers_app.command(
     "lock",
-    help="Run `terraform providers lock` across common platforms (linux/darwin × amd64/arm64).",
+    help="Run `terraform providers lock` across common platforms (linux amd64+arm64 plus the host's platform).",
 )
 def self_providers_lock(
     ctx: typer.Context,
@@ -748,7 +813,7 @@ def main() -> None:
     try:
         cfg_for_last = Config.discover()
     except ConfigError:
-        # No config (e.g. `tfp self init`), or malformed config — skip
+        # No config (e.g. `tfp self init`), or malformed config - skip
         # `last.json` routing here. The second `Config.discover()` inside
         # the try block below will re-raise and be caught by the funnel,
         # producing a clean exit-1 with the user-visible message.

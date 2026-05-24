@@ -16,7 +16,8 @@ def test_do_use_runs_init_and_persists_state(
     config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
 ) -> None:
     commands.do_use(config, arg="dev")
-    assert len(run_calls) == 1
+    # init + post-init `providers lock`
+    assert len(run_calls) == 2
     cmd = run_calls[0]["cmd"]
     assert cmd[0] == config.terraform_binary
     assert f"-chdir={config.terraform_dir / 'demo'}" in cmd
@@ -26,13 +27,15 @@ def test_do_use_runs_init_and_persists_state(
     assert "-backend-config" in cmd
     idx = cmd.index("-backend-config")
     assert cmd[idx + 1] == "key=terraform/azure/dev.tfstate"
+    lock_cmd = run_calls[1]["cmd"]
+    assert lock_cmd[2:4] == ["providers", "lock"]
     assert config.state_file_for("dev").exists()
     assert config.active_file.read_text().strip() == "dev"
 
 
 def test_do_use_warm_skips_init(config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]) -> None:
     commands.do_use(config, arg="dev")
-    assert len(run_calls) == 1
+    assert len(run_calls) == 2  # init + providers lock
     # Simulate terraform having written its data-dir marker so the warmth
     # check believes init has run.
     (config.data_dir_for("dev")).mkdir(parents=True, exist_ok=True)
@@ -110,7 +113,7 @@ def test_apply_uses_saved_plan_and_unlinks(
     plan_path = config.tfplan_file_for("dev")
     plan_path.parent.mkdir(parents=True, exist_ok=True)
     plan_path.write_bytes(b"plan")
-    # Companion sidecar — `tfp plan` always writes both, and preflight
+    # Companion sidecar - `tfp plan` always writes both, and preflight
     # rejects a half-deleted pair. `--force` skips the drift check itself
     # but the file's presence is what preflight asserts on.
     config.tfplan_meta_for("dev").write_text("{}")
@@ -180,6 +183,72 @@ def test_do_state_extras_before_positionals(
 
 def test_state_is_wrapped_not_passthrough() -> None:
     assert "state" in commands.WRAPPED_SUBCOMMANDS
+
+
+def _mock_pull(monkeypatch: pytest.MonkeyPatch) -> list[list[str]]:
+    """Capture subprocess.run calls (used by auto_snapshot)."""
+    captured: list[list[str]] = []
+
+    class R:
+        stdout = b"snap"
+        stderr = b""
+        returncode = 0
+
+    def fake(argv: list[str], **kw: object) -> object:
+        captured.append(argv)
+        return R()
+
+    monkeypatch.setattr("tf_project.self_commands.subprocess.run", fake)
+    return captured
+
+
+def test_do_state_rm_auto_snapshots_before_running(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state: Callable[..., MyState],
+    run_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = config.model_copy(update={"snapshot_retention": 200})
+    save_dev_state()
+    pull_calls = _mock_pull(monkeypatch)
+    commands.do_state(cfg, subcommand="rm", args=["aws_s3_bucket.foo"])
+    assert pull_calls and pull_calls[0][2:4] == ["state", "pull"], pull_calls
+    snapshots = list(cfg.snapshots_dir_for("dev").glob("*.tfstate"))
+    assert len(snapshots) == 1
+    assert "pre-state-rm" in snapshots[0].name
+
+
+def test_do_state_list_does_not_snapshot(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state: Callable[..., MyState],
+    run_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = config.model_copy(update={"snapshot_retention": 200})
+    save_dev_state()
+    pull_calls = _mock_pull(monkeypatch)
+    commands.do_state(cfg, subcommand="list", args=[])
+    assert pull_calls == []
+    assert not cfg.snapshots_dir_for("dev").exists()
+
+
+def test_do_import_auto_snapshots(
+    config: Config,
+    tfvars: pathlib.Path,
+    save_dev_state: Callable[..., MyState],
+    run_calls: list[dict[str, object]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cfg = config.model_copy(update={"snapshot_retention": 200})
+    save_dev_state()
+    pull_calls = _mock_pull(monkeypatch)
+    commands.do_import(cfg, address="aws_s3_bucket.foo", resource_id="my-bucket")
+    assert pull_calls and pull_calls[0][2:4] == ["state", "pull"]
+    snapshots = list(cfg.snapshots_dir_for("dev").glob("*.tfstate"))
+    assert len(snapshots) == 1
+    assert "pre-import" in snapshots[0].name
 
 
 def test_plan_extra_args_forwarded(
@@ -262,7 +331,7 @@ def test_do_use_banner_env_replaces_prior(
     commands.do_use(config, arg="dev")
     state = load_state(config, "dev")
     assert state is not None
-    # No merge — banner is the source of truth on every `tfp use`.
+    # No merge - banner is the source of truth on every `tfp use`.
     assert state.environ == {"NEW_VAR": "y"}
 
 

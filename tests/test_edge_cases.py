@@ -482,7 +482,7 @@ def test_list_orphans_empty_when_slots_dir_missing(tmp_path: pathlib.Path) -> No
     assert list_orphans(cfg) == []
 
 
-# ---- self_commands.py — small edge cases ------------------------------------
+# ---- self_commands.py - small edge cases ------------------------------------
 
 
 def test_self_doctor_secrets_disabled(config: Config) -> None:
@@ -567,7 +567,7 @@ def test_self_state_clear_when_active_slot_has_no_state(config: Config) -> None:
     assert removed == []
 
 
-# ---- commands.py — narrow branches ------------------------------------------
+# ---- commands.py - narrow branches ------------------------------------------
 
 
 def test_do_passthrough_no_active_slot_runs_bare(config: Config, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -667,7 +667,7 @@ def test_require_slot_state_unknown_slot(config: Config) -> None:
         commands._require_slot_state(config, "ghost")
 
 
-# ---- drift detection — each cause ------------------------------------------
+# ---- drift detection - each cause ------------------------------------------
 
 
 def _seed_plan_with_meta(
@@ -802,7 +802,7 @@ def test_do_self_config_path_no_config(tmp_path: pathlib.Path) -> None:
     from tf_project import self_commands
     from tf_project.config import ConfigNotFoundError
 
-    # No tf_project.toml, no pyproject.toml with the table — should walk up to /
+    # No tf_project.toml, no pyproject.toml with the table - should walk up to /
     # and raise. Confine search by chdir'ing into a deep tmp_path subtree.
     deep = tmp_path / "a" / "b" / "c"
     deep.mkdir(parents=True)
@@ -813,7 +813,7 @@ def test_do_self_config_path_no_config(tmp_path: pathlib.Path) -> None:
 def test_do_self_config_path_skips_pyproject_without_table(
     tmp_path: pathlib.Path,
 ) -> None:
-    """A pyproject.toml without the tf_project table is skipped — search continues upward."""
+    """A pyproject.toml without the tf_project table is skipped - search continues upward."""
     from tf_project import self_commands
     from tf_project.config import ConfigNotFoundError
 
@@ -850,7 +850,7 @@ def test_versioned_model_default_migrate_returns_raw(tmp_path: pathlib.Path) -> 
         f: str
 
     p = tmp_path / "static.json"
-    # A v1 payload that happens to already match the v2 shape — default
+    # A v1 payload that happens to already match the v2 shape - default
     # migrate just returns raw unchanged.
     p.write_text(json.dumps({"schema_version": 1, "f": "v"}))
     loaded = StaticToy.load_file(p)

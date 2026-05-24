@@ -4,7 +4,40 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.2.1] — 2026-05-24
+## [0.2.2] - 2026-05-24
+
+### Added
+- **Auto-snapshot before state-mutating ops.** `tfp state rm`, `tfp state
+  mv`, `tfp state replace-provider`, and `tfp import` now `terraform state
+  pull` to `<tmp_dir>/snapshots/<slot>/<ts>-pre-<op>.tfstate` before
+  running - a failed pull aborts the op rather than destroying state you
+  can't roll back to. Recovery is `tfp self snapshot restore [<name>]`
+  (`terraform state push -force`, confirmation prompt; `-y` to skip), and
+  `tfp self snapshot list` enumerates per-slot snapshots newest first. New
+  `snapshot_retention` config field bounds the per-slot count (default
+  **200**, oldest-first pruning on every write; `0` disables auto-snapshot
+  entirely). `apply` is deliberately excluded - its plan/refresh cycle
+  already gives a recoverable diff and auto-snapshotting every apply would
+  dominate iteration time.
+
+### Changed
+- **Cross-platform lockfile hashes are kept fresh automatically.** Every
+  `tfp use` that runs `terraform init` now chases it with `terraform
+  providers lock` for `linux_amd64` + `linux_arm64` (the common CI /
+  runtime targets) plus the host's own platform - so the committed
+  `.terraform.lock.hcl` is portable across the machines that actually
+  touch it without the user remembering to re-lock. Multi-platform teams
+  extend the set via the new `extra_lock_platforms` field in
+  `tf_project.toml` (e.g. `["windows_amd64"]`); entries are validated at
+  config-load time and deduped against the defaults. The previous
+  "lockfile missing" warning is gone - no longer reachable. `tfp self
+  providers lock [-p ...]` remains for ad-hoc re-locking.
+- **`tfp self snapshot` is now a sub-app** (`create` / `list` / `restore`).
+  The old `tfp self snapshot` leaf becomes `tfp self snapshot create`;
+  snapshots live under `<tmp_dir>/snapshots/<slot>/` instead of
+  `<tmp_dir>/snapshot-<ts>.tfstate` so retention can prune per-slot.
+
+## [0.2.1] - 2026-05-24
 
 ### Added
 - **Recovery preflight.** Wrapped commands now bail out with an actionable
@@ -15,41 +48,41 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.terraform.lock.hcl` is missing while the plugin cache is on, pointing
   at `tfp self providers lock` to repopulate cross-platform hashes.
 
-## [0.2.0] — 2026-05-22
+## [0.2.0] - 2026-05-22
 
 ### Release pipeline
 - **Tag-driven releases.** The wheel's version is now derived from the git
   tag at build time via `pdm-backend`'s SCM source; `src/tf_project/__version__.py`
   reads the installed distribution's metadata at runtime. No more code-side
-  version bump — push `vX.Y.Z` and the workflow takes over.
+  version bump - push `vX.Y.Z` and the workflow takes over.
 - **Sigstore-signed artifacts.** Every release attaches the `.whl`,
   `.tar.gz`, and matching `.sigstore` bundles to the GitHub Release.
 - **GitHub Releases automated.** Changelog notes are extracted from
   `## [X.Y.Z]` sections by `mindsers/changelog-reader-action`; pre-release
   tags (`rcN`, `aN`, `bN`, `devN`) are auto-flagged.
-- Removed the post-publish `pdm bump patch` step — the next release version
+- Removed the post-publish `pdm bump patch` step - the next release version
   is whatever you tag next, not whatever a bot guessed.
 
-### Added — slot model (BREAKING)
+### Added - slot model (BREAKING)
 - **Named slots replace the single-state model.** Each tfvars file is bound
   to a slot whose name defaults to the filename stem and can be overridden
   via a new banner field: `{"slot": "production"}`. State, tfplan, and
   `.terraform/` are stored per-slot under `tmp/slots/<slot>/`, so flipping
-  between slots is now a pointer write — no `terraform init` when the slot
+  between slots is now a pointer write - no `terraform init` when the slot
   is already warm.
-- `tfp use <slot-or-path>` — sole verb for selecting a slot. Accepts a slot
+- `tfp use <slot-or-path>` - sole verb for selecting a slot. Accepts a slot
   name or a path to a tfvars file (paths are convenient with shell
   completion). Runs `terraform init -reconfigure` only when the slot's
   `.terraform/` is missing or the backend signature has changed.
-- `tfp ls` — list all slots derived from tfvars banners. Marks the active
+- `tfp ls` - list all slots derived from tfvars banners. Marks the active
   slot, shows project + backend key + warm-since mtime. `--json` for
   scripts. Orphans (slot dirs with no matching banner) are listed
   separately.
-- `tfp rm <slot>` — delete a slot's on-disk directory. Refuses on the
+- `tfp rm <slot>` - delete a slot's on-disk directory. Refuses on the
   active slot unless `--force`. Never touches the tfvars file.
-- Global `-s/--slot <name>` flag — operate against a specific slot for one
+- Global `-s/--slot <name>` flag - operate against a specific slot for one
   invocation, without rewriting the saved active.
-- `TFP_SLOT` env var — overrides the saved active for the current shell
+- `TFP_SLOT` env var - overrides the saved active for the current shell
   (useful for parallel slots across terminals or in CI).
 - Banner `slot` field validated for uniqueness across `tfvars_dir/*.tfvars`
   on every `tfp use` / `tfp ls`. Conflicts name both files and whether each
@@ -58,13 +91,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   independent provider/module/backend bindings on disk.
 - Plugin cache shared across all slots via `TF_PLUGIN_CACHE_DIR`
   (default `tmp/plugin-cache/`, configurable). Providers download once and
-  are linked into each slot's `.terraform/providers/` — first init for a
+  are linked into each slot's `.terraform/providers/` - first init for a
   new slot is seconds, not minutes. `TF_PLUGIN_CACHE_MAY_BREAK_DEPENDENCY_LOCK_FILE=1`
   is set automatically; pair with `tfp self providers lock` to populate
   multi-platform hashes for CI.
-- `tfp self providers lock [-p <platform>]` — wraps `terraform providers lock`
+- `tfp self providers lock [-p <platform>]` - wraps `terraform providers lock`
   across `linux/darwin × amd64/arm64` by default.
-- `tfp self state show --all` / `tfp self state clear --all` — operate on
+- `tfp self state show --all` / `tfp self state clear --all` - operate on
   every slot at once.
 - `tfp self doctor` adds slot-uniqueness and orphan checks.
 - Apply-safety hashes now also pin `project`, `state_key`, full
@@ -78,9 +111,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tmp/slots/<slot>/state.json` on first run, with a breadcrumb left at
   `tmp/MIGRATED-<UTC-timestamp>.txt`.
 
-### Changed — slot model (BREAKING)
+### Changed - slot model (BREAKING)
 - `tfp init <tfvars>` is **removed**. Use `tfp use <slot-or-path>` instead.
-- Banner `env` is no longer merged across `tfp use` invocations — the
+- Banner `env` is no longer merged across `tfp use` invocations - the
   banner is the single source of truth at the moment of switching.
 - `tfp last` / `tfp status` / `tfp self state show` / `tfp self trace` /
   `tfp self snapshot` / `tfp self lock` are all slot-scoped. They consult
@@ -94,11 +127,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-resolve.
 
 ### Added
-- `tfp state` subcommand group — all eight terraform state subcommands
+- `tfp state` subcommand group - all eight terraform state subcommands
   (`list`, `show`, `mv`, `rm`, `pull`, `push`, `replace-provider`,
   `identities`) wrapped and discoverable in `tfp --help`. Each forwards
   `-chdir` + the saved env.
-- `tfp import <ADDRESS> <ID>` — promoted from raw passthrough to a wrapped
+- `tfp import <ADDRESS> <ID>` - promoted from raw passthrough to a wrapped
   subcommand. Forwards the decrypted tfvars (`-var-file`) and the saved
   env so provider blocks that reference variables can resolve. Extra
   terraform flags after the positional args still passthrough.
@@ -111,13 +144,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend-level lease break only if the polite path fails or the lock ID
   isn't recoverable. Pass `--blunt` to skip terraform entirely. Refuses
   to escalate to a backend-level break when no lock is present.
-- `tfp self snapshot` — pulls the remote tfstate to a local file via
+- `tfp self snapshot` - pulls the remote tfstate to a local file via
   `terraform state pull`. Defaults to `<tmp_dir>/snapshot-<UTC-timestamp>.tfstate`.
-- `tfp self trace <subcommand>` — prints the exact terraform argv `tfp <subcommand>`
+- `tfp self trace <subcommand>` - prints the exact terraform argv `tfp <subcommand>`
   would build, without invoking anything. Useful when copy-pasting a
   command to debug outside the wrapper. Tracing `use` works against a
-  fresh slot — no saved state required.
-- `tfp last` — prints the most recent terraform invocation recorded by
+  fresh slot - no saved state required.
+- `tfp last` - prints the most recent terraform invocation recorded by
   tfp (argv + exit code + timestamp). Persisted per-slot at
   `tmp/slots/<slot>/last.json`.
 - Tab-completion for `tfp use` (slot names + tfvars paths) and
@@ -141,11 +174,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Azure-specific `lease_state` / `lease_duration` fields are folded into
   `detail`.
 - Tfplan meta sidecar field renamed from `tfvars_sha256` to
-  `inputs_sha256`. The legacy field name is **not** accepted on read —
+  `inputs_sha256`. The legacy field name is **not** accepted on read -
   saved plans from pre-rename versions must be re-created with
   `tfp plan`.
-- `tfp status` — one-line summary of the active slot.
-- `tfp self banner check <tfvars>` — validates a banner and prints the
+- `tfp status` - one-line summary of the active slot.
+- `tfp self banner check <tfvars>` - validates a banner and prints the
   resolved `source_root` / `backend_config` / `env` / `slot` without
   running terraform.
 - Global `--verbose` and `--dry-run` flags. `--verbose` logs the terraform
@@ -156,14 +189,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Real-terraform end-to-end integration test covering use→plan→apply→destroy
   against a `null_resource` fixture, plus a two-slot warm-switch test.
 - `BannerError` for clean, file-pathed banner validation failures.
-- `py.typed` marker — the package ships type information explicitly.
+- `py.typed` marker - the package ships type information explicitly.
 - Terraform exit codes propagate cleanly (no Python traceback when
   terraform fails). `terraform` not found exits 127.
 - SIGINT during a running terraform command no longer kills Python first;
   terraform receives the signal via the shared process group and we wait
   for it to finish.
 - Passthrough invocations (`tfp <unknown-subcommand>`) `os.execvpe` the
-  terraform process directly — native signal handling and exit code.
+  terraform process directly - native signal handling and exit code.
   `tfp -s <slot> <unknown>` refuses if the slot has no saved state, rather
   than silently dropping `-chdir`.
 - `state.save_state` takes an exclusive file lock so parallel `tfp use`
@@ -176,7 +209,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tfp state-mv` top-level command. Use `tfp state mv` instead.
 - `commands.do_state_mv` public helper. Use `commands.do_state(subcommand="mv", ...)`.
 
-## [0.1.0] — 2026-05-14
+## [0.1.0] - 2026-05-14
 
 ### Added
 - Initial release. `tf-project` (aka `tfp`) CLI wrapping `terraform`

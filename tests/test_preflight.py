@@ -57,21 +57,6 @@ def test_check_apply_plan_half_deleted_meta_present(config: Config) -> None:
     assert "half-deleted" in str(exc.value)
 
 
-def test_dep_lock_warning_lock_present(tmp_path: pathlib.Path) -> None:
-    (tmp_path / ".terraform.lock.hcl").write_text("# lock\n")
-    assert preflight.dep_lock_warning(tmp_path, plugin_cache_enabled=True) is None
-
-
-def test_dep_lock_warning_missing_but_cache_disabled(tmp_path: pathlib.Path) -> None:
-    assert preflight.dep_lock_warning(tmp_path, plugin_cache_enabled=False) is None
-
-
-def test_dep_lock_warning_missing_with_cache(tmp_path: pathlib.Path) -> None:
-    msg = preflight.dep_lock_warning(tmp_path, plugin_cache_enabled=True)
-    assert msg is not None
-    assert "tfp self providers lock" in msg
-
-
 # ---- Integration: wrapped commands surface RecoveryError -----------------------
 
 
@@ -94,7 +79,7 @@ def test_do_apply_recovery_when_plan_meta_half_deleted(
 ) -> None:
     save_dev_state()
     config.tfplan_file_for("dev").write_bytes(b"plan")
-    # meta missing — half-state from a hand-edit.
+    # meta missing - half-state from a hand-edit.
     with pytest.raises(preflight.RecoveryError) as exc:
         commands.do_apply(config)
     assert "half-deleted" in str(exc.value)
@@ -113,21 +98,28 @@ def test_do_passthrough_recovery_when_data_dir_missing(
     assert run_calls == []
 
 
-def test_do_use_warns_when_dep_lock_missing(
-    config: Config, capsys: pytest.CaptureFixture[str], run_calls: list[dict[str, object]]
+def test_do_use_runs_providers_lock_after_init(
+    config: Config, run_calls: list[dict[str, object]]
 ) -> None:
-    # Source root exists from project_tree fixture but has no .terraform.lock.hcl.
     commands.do_use(config, arg="dev")
-    err = capsys.readouterr().err
-    assert ".terraform.lock.hcl is missing" in err
-    assert "tfp self providers lock" in err
+    cmds = [call["cmd"] for call in run_calls]
+    assert len(cmds) == 2, cmds
+    assert "init" in cmds[0]
+    assert cmds[1][2:4] == ["providers", "lock"]
+    assert "-platform=linux_amd64" in cmds[1]
+    assert "-platform=linux_arm64" in cmds[1]
+    assert f"-platform={commands.current_terraform_platform()}" in cmds[1]
 
 
-def test_do_use_no_warning_when_dep_lock_present(
-    config: Config, capsys: pytest.CaptureFixture[str], run_calls: list[dict[str, object]]
+def test_do_use_includes_extra_lock_platforms(
+    config: Config, run_calls: list[dict[str, object]]
 ) -> None:
-    source_root = (config.terraform_dir / "demo").resolve()
-    (source_root / ".terraform.lock.hcl").write_text("# lock\n")
-    commands.do_use(config, arg="dev")
-    err = capsys.readouterr().err
-    assert ".terraform.lock.hcl is missing" not in err
+    cfg = config.model_copy(update={"extra_lock_platforms": ("windows_amd64", "freebsd_amd64")})
+    commands.do_use(cfg, arg="dev")
+    lock_cmd = run_calls[1]["cmd"]
+    assert "-platform=windows_amd64" in lock_cmd
+    assert "-platform=freebsd_amd64" in lock_cmd
+    # Base + host still present.
+    assert "-platform=linux_amd64" in lock_cmd
+    assert "-platform=linux_arm64" in lock_cmd
+    assert f"-platform={commands.current_terraform_platform()}" in lock_cmd

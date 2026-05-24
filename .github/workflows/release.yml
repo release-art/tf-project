@@ -9,7 +9,7 @@
 #   5. Creates a GitHub Release with changelog notes and the signed
 #      artifacts (.whl + .tar.gz + .sigstore.json bundles) attached.
 #
-# No code-side version bump — the next release version is whatever you
+# No code-side version bump - the next release version is whatever you
 # tag next. `pyproject.toml`'s `[tool.pdm.version] source = "scm"` derives
 # the wheel version from `${GITHUB_REF_NAME#v}`.
 name: Release

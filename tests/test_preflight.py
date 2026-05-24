@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import pathlib
 from collections.abc import Callable
 
 import pytest
@@ -98,9 +97,7 @@ def test_do_passthrough_recovery_when_data_dir_missing(
     assert run_calls == []
 
 
-def test_do_use_runs_providers_lock_after_init(
-    config: Config, run_calls: list[dict[str, object]]
-) -> None:
+def test_do_use_runs_providers_lock_after_init(config: Config, run_calls: list[dict[str, object]]) -> None:
     commands.do_use(config, arg="dev")
     cmds = [call["cmd"] for call in run_calls]
     assert len(cmds) == 2, cmds
@@ -111,9 +108,7 @@ def test_do_use_runs_providers_lock_after_init(
     assert f"-platform={commands.current_terraform_platform()}" in cmds[1]
 
 
-def test_do_use_includes_extra_lock_platforms(
-    config: Config, run_calls: list[dict[str, object]]
-) -> None:
+def test_do_use_includes_extra_lock_platforms(config: Config, run_calls: list[dict[str, object]]) -> None:
     cfg = config.model_copy(update={"extra_lock_platforms": ("windows_amd64", "freebsd_amd64")})
     commands.do_use(cfg, arg="dev")
     lock_cmd = run_calls[1]["cmd"]

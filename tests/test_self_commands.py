@@ -350,9 +350,7 @@ def test_self_snapshot_list_returns_newest_first(
     assert [e.path for e in entries] == [second, first]
 
 
-def test_self_snapshot_list_empty_for_fresh_slot(
-    config: Config, tfvars: pathlib.Path, save_dev_state
-) -> None:
+def test_self_snapshot_list_empty_for_fresh_slot(config: Config, tfvars: pathlib.Path, save_dev_state) -> None:
     save_dev_state()
     assert self_commands.do_self_snapshot_list(config) == []
 
@@ -443,9 +441,7 @@ def test_self_snapshot_restore_named(
     assert restored == older
 
 
-def test_self_snapshot_restore_no_snapshots(
-    config: Config, tfvars: pathlib.Path, save_dev_state
-) -> None:
+def test_self_snapshot_restore_no_snapshots(config: Config, tfvars: pathlib.Path, save_dev_state) -> None:
     save_dev_state()
     with pytest.raises(self_commands.SelfCommandError, match="No snapshots"):
         self_commands.do_self_snapshot_restore(config)
@@ -491,9 +487,7 @@ def test_self_providers_lock_dedupes_user_duplicates(
 ) -> None:
     save_dev_state()
     monkeypatch.setattr("tf_project.terraform.run", lambda cmd, env=None: None)
-    argv = self_commands.do_self_providers_lock(
-        config, platforms=["linux_amd64", "linux_arm64", "linux_amd64"]
-    )
+    argv = self_commands.do_self_providers_lock(config, platforms=["linux_amd64", "linux_arm64", "linux_amd64"])
     assert argv.count("-platform=linux_amd64") == 1
     assert argv.count("-platform=linux_arm64") == 1
 

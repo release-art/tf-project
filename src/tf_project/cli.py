@@ -617,7 +617,9 @@ def self_snapshot_create(
     ctx: typer.Context,
     dest: Annotated[
         pathlib.Path | None,
-        typer.Option("--dest", help="Output path. Defaults to <tmp_dir>/snapshots/<slot>/<UTC-timestamp>-manual.tfstate."),
+        typer.Option(
+            "--dest", help="Output path. Defaults to <tmp_dir>/snapshots/<slot>/<UTC-timestamp>-manual.tfstate."
+        ),
     ] = None,
 ) -> None:
     try:
@@ -670,8 +672,7 @@ def self_snapshot_restore(
     target_name = name or entries[0].path.name
     if not yes:
         typer.confirm(
-            f"Restore snapshot {target_name!r} to the remote backend? "
-            f"This will OVERWRITE the live tfstate.",
+            f"Restore snapshot {target_name!r} to the remote backend? This will OVERWRITE the live tfstate.",
             abort=True,
         )
     try:

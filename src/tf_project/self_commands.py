@@ -525,8 +525,7 @@ def do_self_snapshot_restore(
         if not candidates:
             raise SelfCommandError(
                 f"No snapshot named {name!r} for slot {slot_name!r}. "
-                f"Available: {', '.join(e.path.name for e in entries[:5])}"
-                + (" ..." if len(entries) > 5 else "")
+                f"Available: {', '.join(e.path.name for e in entries[:5])}" + (" ..." if len(entries) > 5 else "")
             )
         target = candidates[0]
     try:
@@ -564,7 +563,6 @@ def do_self_providers_lock(
     when called with `platforms=None`.
     """
     from tf_project import terraform as terraform_mod
-
     from tf_project.commands import build_providers_lock_argv
 
     name = _resolve_slot_name(config, slot=slot)

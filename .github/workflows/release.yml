@@ -71,12 +71,27 @@ jobs:
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
+      - name: Resolve version and prerelease flag
+        # Tag is `v1.2.1`; CHANGELOG entries are headed `## [1.2.1]`, so
+        # strip the `v` before handing the version to the reader action.
+        # Pre-release detection follows PEP 440 suffixes anchored at the end
+        # of the version (aN/bN/cN/rcN/alphaN/betaN/preN/previewN/.devN), so
+        # a tag like `v1.0.0-darwin` or `v1.2.3` isn't misclassified just
+        # because it happens to contain an `a` or `b`.
+        id: ver
+        run: |
+          echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          if [[ "$GITHUB_REF_NAME" =~ ^v[0-9]+(\.[0-9]+)+((a|b|c|rc|alpha|beta|pre|preview)[0-9]+|\.dev[0-9]+)$ ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Extract release notes from CHANGELOG
         id: changelog
         uses: mindsers/changelog-reader-action@v2
         with:
-          # Tag is `v1.2.1`; CHANGELOG entries are headed `## [1.2.1]`.
-          version: ${{ github.ref_name }}
+          version: ${{ steps.ver.outputs.version }}
           path: ./CHANGELOG.md
         continue-on-error: true
 
@@ -86,9 +101,10 @@ jobs:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.changes || format('Release {0}. See [CHANGELOG.md](CHANGELOG.md) for details.', github.ref_name) }}
-          # Tags like v1.2.3rc1, v1.2.3a1, v1.2.3.dev0 → pre-release.
-          # Plain v1.2.3 → stable.
-          prerelease: ${{ contains(github.ref_name, 'rc') || contains(github.ref_name, 'a') || contains(github.ref_name, 'b') || contains(github.ref_name, 'dev') }}
+          # Tags like v1.2.3rc1, v1.2.3a1, v1.2.3.dev0 -> pre-release.
+          # Plain v1.2.3 -> stable. See the "Resolve version and prerelease
+          # flag" step above for the exact regex.
+          prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
           files: |
             dist/*.whl
             dist/*.tar.gz

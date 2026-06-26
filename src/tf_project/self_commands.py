@@ -283,9 +283,10 @@ def do_self_banner_check(config: Config, *, tfvars: pathlib.Path) -> dict[str, A
 
 _TRACE_PLACEHOLDER = "<DECRYPTED_TFVARS>"
 
-TraceSubcommand = Literal["use", "plan", "apply", "refresh", "destroy", "output", "import"]
+TraceSubcommand = Literal["use", "init", "plan", "apply", "refresh", "destroy", "output", "import"]
 TRACE_SUBCOMMANDS: tuple[TraceSubcommand, ...] = (
     "use",
+    "init",
     "plan",
     "apply",
     "refresh",
@@ -314,10 +315,10 @@ def do_self_trace(
 
     name = _resolve_slot_name(config, slot=slot)
 
-    # `use` traces an init from the current banner - it doesn't read saved
-    # state, so don't require it. Other subcommands need state because their
-    # argv depends on saved tfvars / source_root / etc.
-    if subcommand == "use":
+    # `use` / `init` trace an init from the current banner - they don't read
+    # saved state, so don't require it. Other subcommands need state because
+    # their argv depends on saved tfvars / source_root / etc.
+    if subcommand in ("use", "init"):
         try:
             resolved = slots_mod.resolve_slot(name, config=config)
         except slots_mod.SlotError as exc:

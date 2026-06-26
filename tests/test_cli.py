@@ -115,6 +115,7 @@ def test_cli_dispatches_use(
     ("argv", "expected_passthrough", "expected_args"),
     [
         (["plan"], False, []),
+        (["init"], False, []),
         (["use", "dev"], False, []),
         (["--version"], False, []),
         (["--help"], False, []),

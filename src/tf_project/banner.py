@@ -81,7 +81,8 @@ def resolve_backend_config(
          (only if `state_key_prefix` is set).
       2. `[tf_project.backend_config]` from config.
       3. `backend_config` from the banner.
-      4. `state_key` from the banner - final word on `key`.
+      4. `state_key` from the banner - final word on `key`, normalised via
+         `_normalize_state_key`.
     """
     merged: dict[str, str] = {}
     if config.state_key_prefix:
@@ -89,8 +90,37 @@ def resolve_backend_config(
     merged.update(config.backend_config)
     merged.update(banner.backend_config)
     if banner.state_key is not None:
-        merged["key"] = banner.state_key
+        merged["key"] = _normalize_state_key(banner.state_key, tfvars=tfvars)
     return merged
+
+
+def _normalize_state_key(state_key: str, *, tfvars: pathlib.Path) -> str:
+    """Validate a banner `state_key` and return the backend `key`.
+
+    tf-project is opinionated: a `state_key` MUST be an absolute, already-
+    normalised pure POSIX path. Anything else - a relative key, a backslash,
+    a `.`/`..` segment, a redundant `//`, or a trailing `/` - is rejected
+    rather than silently rewritten, so the remote-state blob a banner targets
+    is unambiguous from the text alone.
+
+    The one transformation applied to a valid key is stripping its single
+    leading slash: the azurerm backend prepends the container name to the
+    key, so a leading slash would produce a double-slashed blob name
+    (`.../tfstates//foo.tfstate`).
+    """
+    if "\\" in state_key:
+        raise BannerError(tfvars, f"state_key {state_key!r} must be a pure POSIX path (no backslashes).")
+    if not state_key.startswith("/"):
+        raise BannerError(tfvars, f"state_key {state_key!r} must be an absolute POSIX path (start with '/').")
+    key = state_key[1:]  # strip exactly one leading slash
+    if not key:
+        raise BannerError(tfvars, f"state_key {state_key!r} resolves to an empty backend key.")
+    pure = pathlib.PurePosixPath(key)
+    if any(seg in (".", "..") for seg in pure.parts):
+        raise BannerError(tfvars, f"state_key {state_key!r} must not contain '.' or '..' segments.")
+    if pure.is_absolute() or str(pure) != key:
+        raise BannerError(tfvars, f"state_key {state_key!r} must be a normalised path (no '//' or trailing '/').")
+    return key
 
 
 def resolve_slot_name(banner: Banner, *, tfvars: pathlib.Path) -> tuple[str, bool]:

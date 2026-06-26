@@ -130,7 +130,7 @@ def test_self_doctor_flags_missing_terraform_binary_path(config: Config) -> None
 
 
 def test_self_banner_check_summary(config: Config, tfvars: pathlib.Path) -> None:
-    tfvars.write_text('# {"header":"terraform","project":"demo","env":{"A":"1"},"state_key":"k"}\nfoo = "bar"\n')
+    tfvars.write_text('# {"header":"terraform","project":"demo","env":{"A":"1"},"state_key":"/k"}\nfoo = "bar"\n')
     summary = self_commands.do_self_banner_check(config, tfvars=tfvars)
     assert summary["project"] == "demo"
     assert summary["env"] == {"A": "1"}
@@ -501,6 +501,16 @@ def test_self_trace_use_does_not_require_saved_state(config: Config, tfvars: pat
     argv = self_commands.do_self_trace(config, subcommand="use", slot="dev")
     assert "init" in argv
     assert "-reconfigure" in argv
+
+
+def test_self_trace_init_matches_use(config: Config, tfvars: pathlib.Path) -> None:
+    """`tfp self trace init` traces the same banner-resolved init as `use`."""
+    from tf_project.state import write_active
+
+    write_active(config, "dev")
+    use_argv = self_commands.do_self_trace(config, subcommand="use", slot="dev")
+    init_argv = self_commands.do_self_trace(config, subcommand="init", slot="dev")
+    assert init_argv == use_argv
 
 
 def test_self_lock_status_parses_az_output(

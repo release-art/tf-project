@@ -83,6 +83,7 @@ def default_lock_platforms(extras: Sequence[str] = ()) -> tuple[str, ...]:
 WRAPPED_SUBCOMMANDS: frozenset[str] = frozenset(
     {
         "use",
+        "init",
         "ls",
         "rm",
         "plan",
@@ -480,15 +481,61 @@ def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> R
     if arg != resolved.name and slots_mod.looks_like_path(arg):
         print(f"resolved {arg} → slot {resolved.name!r}", file=sys.stderr)
 
+    _bind_slot(config, resolved, force_init=False, set_active=True, extra=extra)
+    return resolved
+
+
+def do_init(config: Config, *, slot: str | None = None, extra: Sequence[str] | None = None) -> ResolvedSlot:
+    """Re-resolve the active slot's banner and re-bind its backend.
+
+    Unlike a bare `terraform init` (which `do_passthrough` would have run,
+    silently reusing the backend already cached in `.terraform/`), this
+    re-reads the live tfvars banner, runs `terraform init -reconfigure` with
+    the freshly-resolved `-backend-config`, and refreshes the saved slot
+    state. This is the command to run after editing a banner's `state_key`
+    or `backend_config` - it keeps `tfp status` and subsequent plan/apply
+    pointed at the backend the banner actually describes.
+
+    Operates on the active slot (`-s` / TFP_SLOT / active file) but, unlike
+    `do_use`, does not move the active-slot pointer. Always runs
+    `terraform init` even when the backend signature is unchanged, matching
+    the explicit-`init` contract (provider upgrades, backend reconfigure).
+    """
+    validate_uniqueness(config)
+    active = _require_active(config, flag=slot)
+    resolved = slots_mod.resolve_slot(active.name, config=config)
+    _bind_slot(config, resolved, force_init=True, set_active=False, extra=extra)
+    return resolved
+
+
+def _bind_slot(
+    config: Config,
+    resolved: ResolvedSlot,
+    *,
+    force_init: bool,
+    set_active: bool,
+    extra: Sequence[str] | None = None,
+) -> None:
+    """Init (when needed) and persist `resolved` as the slot's saved state.
+
+    Shared core of `do_use` and `do_init`. `force_init` runs `terraform
+    init` even when the backend signature is unchanged (the explicit `tfp
+    init` contract); `do_use` leaves it False so a warm switch is a pointer
+    write. `set_active` writes the active-slot pointer (`do_use`); `do_init`
+    skips it - re-binding the backend should not change which slot bare
+    commands target.
+    """
     decision = _decide_init(config, resolved, config.terraform_binary)
+    needs_init = decision.needs_init or force_init
+    reason = decision.reason if decision.needs_init else "explicit re-init"
     first_init = not resolved.slot_dir.exists()
     resolved.slot_dir.mkdir(parents=True, exist_ok=True)
     plugin_cache_dir = config.effective_plugin_cache_dir
     if plugin_cache_dir is not None:
         plugin_cache_dir.mkdir(parents=True, exist_ok=True)
 
-    if decision.needs_init:
-        print(f"==== PROJECT: {resolved.project} (slot {resolved.name!r}, {decision.reason}) ====")
+    if needs_init:
+        print(f"==== PROJECT: {resolved.project} (slot {resolved.name!r}, {reason}) ====")
         init_env = terraform.merged_env(
             resolved.env,
             data_dir=resolved.data_dir,
@@ -530,13 +577,12 @@ def do_use(config: Config, *, arg: str, extra: Sequence[str] | None = None) -> R
         backend_config=dict(resolved.backend_config),
     )
     save_state(state, config)
-    write_active(config, resolved.name)
-
-    print(
-        f"active slot → {resolved.name} (file: {config.active_file}; affects all shells without TFP_SLOT set)",
-        file=sys.stderr,
-    )
-    return resolved
+    if set_active:
+        write_active(config, resolved.name)
+        print(
+            f"active slot → {resolved.name} (file: {config.active_file}; affects all shells without TFP_SLOT set)",
+            file=sys.stderr,
+        )
 
 
 def validate_uniqueness(config: Config) -> None:
@@ -847,6 +893,7 @@ __all__ = [
     "build_plan_argv",
     "build_refresh_argv",
     "build_state_argv",
+    "do_init",
     "do_rm",
     "do_use",
     "do_apply",

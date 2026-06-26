@@ -5,11 +5,9 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
-from typing import Annotated
+from typing import Annotated, NamedTuple
 
-import click
 import typer
-from click.shell_completion import CompletionItem
 
 from tf_project import banner, commands, migrate, preflight, self_commands, slots, terraform
 from tf_project.__version__ import __version__
@@ -64,13 +62,25 @@ app = typer.Typer(
 )
 
 
-def _complete_tfvars(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+# Shell-completion callbacks, wired via typer's native `autocompletion=` (not
+# click's `shell_complete=`, which typer deprecates). typer invokes each as
+# `cb(ctx, args, incomplete)` and turns a returned `(value, help)` tuple into a
+# completion with help text (typer/core.py). `_Completion` is that tuple as a
+# NamedTuple, so the items also expose `.value` / `.help` for tests - and we
+# avoid importing the standalone `click` package, which is not a dependency
+# (typer vendors its own click as `typer._click`).
+class _Completion(NamedTuple):
+    value: str
+    help: str
+
+
+def _complete_tfvars(ctx: typer.Context, args: list[str], incomplete: str) -> list[_Completion]:
     """Tab-completion: list tfvars files under config.tfvars_dir, labelled by project."""
     try:
         cfg = Config.discover()
     except Exception:  # noqa: BLE001
         return []
-    out: list[CompletionItem] = []
+    out: list[_Completion] = []
     if not cfg.tfvars_dir.is_dir():
         return out
     cwd = pathlib.Path.cwd()
@@ -86,26 +96,26 @@ def _complete_tfvars(ctx: click.Context, param: click.Parameter, incomplete: str
             label = b.project
         except (banner.ProjectInfoNotFoundError, banner.BannerError, OSError):
             label = "(no banner)"
-        out.append(CompletionItem(value=display, help=f"project={label}"))
+        out.append(_Completion(display, f"project={label}"))
     return out
 
 
-def _complete_slot(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+def _complete_slot(ctx: typer.Context, args: list[str], incomplete: str) -> list[_Completion]:
     """Tab-completion: slot names from the tfvars dir."""
     try:
         cfg = Config.discover()
     except Exception:  # noqa: BLE001
         return []
-    out: list[CompletionItem] = []
+    out: list[_Completion] = []
     for slot in slots.list_slots(cfg):
         if slot.name.startswith(incomplete):
-            out.append(CompletionItem(value=slot.name, help=f"project={slot.project}"))
+            out.append(_Completion(slot.name, f"project={slot.project}"))
     return out
 
 
-def _complete_use_arg(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+def _complete_use_arg(ctx: typer.Context, args: list[str], incomplete: str) -> list[_Completion]:
     """Tab-completion for `tfp use`: slot names + tfvars paths."""
-    return _complete_slot(ctx, param, incomplete) + _complete_tfvars(ctx, param, incomplete)
+    return _complete_slot(ctx, args, incomplete) + _complete_tfvars(ctx, args, incomplete)
 
 
 def _version_callback(value: bool) -> None:
@@ -123,7 +133,7 @@ def root(
             "--slot",
             "-s",
             help="Operate against a specific slot for this invocation (does not change the saved active).",
-            shell_complete=_complete_slot,
+            autocompletion=_complete_slot,
         ),
     ] = None,
     version: Annotated[
@@ -169,6 +179,20 @@ def use(
     except slots.SlotError as exc:
         typer.echo(str(exc), err=True)
         raise typer.Exit(code=1) from exc
+
+
+@app.command(
+    "init",
+    context_settings=PASSTHROUGH_CTX,
+    help=(
+        "Re-resolve the active slot's banner and re-bind the backend "
+        "(terraform init -reconfigure with the banner's -backend-config), "
+        "refreshing the saved slot state. Run this after editing a banner's "
+        "state_key / backend_config. Does not change which slot is active."
+    ),
+)
+def init(ctx: typer.Context) -> None:
+    commands.do_init(_config(ctx), slot=_slot_flag(ctx), extra=ctx.args)
 
 
 @app.command("ls", help="List all slots derived from tfvars banners.")
@@ -220,7 +244,7 @@ def ls(
 @app.command("rm", help="Remove a slot directory (does not touch the tfvars file).")
 def rm(
     ctx: typer.Context,
-    slot: Annotated[str, typer.Argument(help="Slot name to remove.", shell_complete=_complete_slot)],
+    slot: Annotated[str, typer.Argument(help="Slot name to remove.", autocompletion=_complete_slot)],
     force: Annotated[bool, typer.Option("--force", help="Allow removing the active slot.")] = False,
 ) -> None:
     cfg = _config(ctx)
@@ -562,7 +586,7 @@ def self_trace(
     ctx: typer.Context,
     subcommand: Annotated[
         str,
-        typer.Argument(help="One of: use, plan, apply, refresh, destroy, output, import."),
+        typer.Argument(help="One of: use, init, plan, apply, refresh, destroy, output, import."),
     ],
     targets: TargetsOption = None,
     replaces: ReplacesOption = None,
@@ -593,7 +617,7 @@ def self_banner_check(
             file_okay=True,
             dir_okay=False,
             readable=True,
-            shell_complete=_complete_tfvars,
+            autocompletion=_complete_tfvars,
         ),
     ],
 ) -> None:

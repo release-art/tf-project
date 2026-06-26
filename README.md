@@ -100,7 +100,7 @@ Banner fields:
 | `header`         | Must be `"terraform"`. Identifies the comment line as a tf-project banner.                                                       |
 | `project`        | Subdirectory under `terraform_dir/` containing the source `.tf` files.                                                            |
 | `slot`           | Slot name. Defaults to the tfvars filename stem. Must be unique across all tfvars in `tfvars_dir`.                                |
-| `state_key`      | Full remote-state backend key. Overrides the default `<state_key_prefix><tfvars-stem>.tfstate`. Use to share state across files.  |
+| `state_key`      | Full remote-state backend key. Overrides the default `<state_key_prefix><tfvars-stem>.tfstate`. Must be an absolute, normalised pure POSIX path (`/shared/global.tfstate`); relative keys, `.`/`..`, `//`, trailing `/`, and backslashes are rejected. The single leading slash is stripped before use (azurerm prepends the container, so a leading slash would double it). Use to share state across files. |
 | `env`            | JSON object of `string → string` env vars passed to terraform when running against this slot.                                     |
 | `backend_config` | JSON object of extra `-backend-config k=v` pairs. Wins over the config-level `[tf_project.backend_config]` table.                |
 
@@ -112,6 +112,8 @@ but logged to stderr - so a typo doesn't disappear silently.
 ```sh
 tfp use dev                     # switch to slot "dev" (no init if already warm)
 tfp use tfvars/prod.tfvars      # path also accepted (useful with shell completion)
+tfp init                        # re-bind the active slot's backend from its banner
+                                # (run after editing a banner's state_key/backend_config)
 tfp ls                          # list slots; active marked with `*`
 tfp rm staging                  # remove a slot's on-disk directory
 

@@ -120,11 +120,52 @@ def test_resolve_backend_config_state_key_wins(config: Config, tfvars: pathlib.P
             "header": "terraform",
             "project": "demo",
             "backend_config": {"key": "from-bc"},
-            "state_key": "from-state-key",
+            "state_key": "/from-state-key",
         }
     )
     out = banner.resolve_backend_config(b, tfvars=tfvars, config=config)
     assert out["key"] == "from-state-key"
+
+
+@pytest.mark.parametrize(
+    ("state_key", "expected"),
+    [
+        # The bug-report case: the single leading slash is stripped, or
+        # azurerm builds `.../tfstates//site-monitor-ilo_dev.tfstate`.
+        ("/site-monitor-ilo_dev.tfstate", "site-monitor-ilo_dev.tfstate"),
+        ("/nested/path/app.tfstate", "nested/path/app.tfstate"),
+    ],
+)
+def test_resolve_backend_config_strips_leading_slash(
+    config: Config, tfvars: pathlib.Path, state_key: str, expected: str
+) -> None:
+    b = Banner.model_validate({"header": "terraform", "project": "demo", "state_key": state_key})
+    out = banner.resolve_backend_config(b, tfvars=tfvars, config=config)
+    assert out["key"] == expected
+
+
+@pytest.mark.parametrize(
+    "state_key",
+    [
+        "site-monitor.tfstate",  # not absolute
+        "relative/app.tfstate",  # not absolute
+        "/nested/../app.tfstate",  # `..` segment
+        "/./app.tfstate",  # `.` segment
+        "/doubled//slashes.tfstate",  # redundant `//`
+        "//leading-double.tfstate",  # leading `//`
+        "/trailing/slash/",  # trailing `/`
+        "\\windows\\style.tfstate",  # backslashes
+        "/",  # empty after stripping
+        "///",  # empty after stripping
+    ],
+)
+def test_resolve_backend_config_rejects_impure_state_key(
+    config: Config, tfvars: pathlib.Path, state_key: str
+) -> None:
+    """tf-project is opinionated: non-absolute / un-normalised keys must raise."""
+    b = Banner.model_validate({"header": "terraform", "project": "demo", "state_key": state_key})
+    with pytest.raises(banner.BannerError, match="state_key"):
+        banner.resolve_backend_config(b, tfvars=tfvars, config=config)
 
 
 def test_render_summary(config: Config, tfvars: pathlib.Path) -> None:

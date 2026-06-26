@@ -171,6 +171,20 @@ def use(
         raise typer.Exit(code=1) from exc
 
 
+@app.command(
+    "init",
+    context_settings=PASSTHROUGH_CTX,
+    help=(
+        "Re-resolve the active slot's banner and re-bind the backend "
+        "(terraform init -reconfigure with the banner's -backend-config), "
+        "refreshing the saved slot state. Run this after editing a banner's "
+        "state_key / backend_config. Does not change which slot is active."
+    ),
+)
+def init(ctx: typer.Context) -> None:
+    commands.do_init(_config(ctx), slot=_slot_flag(ctx), extra=ctx.args)
+
+
 @app.command("ls", help="List all slots derived from tfvars banners.")
 def ls(
     ctx: typer.Context,
@@ -562,7 +576,7 @@ def self_trace(
     ctx: typer.Context,
     subcommand: Annotated[
         str,
-        typer.Argument(help="One of: use, plan, apply, refresh, destroy, output, import."),
+        typer.Argument(help="One of: use, init, plan, apply, refresh, destroy, output, import."),
     ],
     targets: TargetsOption = None,
     replaces: ReplacesOption = None,

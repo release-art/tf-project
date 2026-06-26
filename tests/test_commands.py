@@ -86,6 +86,58 @@ def test_do_use_reinit_failure_preserves_prior_state(
     assert config.state_file_for("dev").read_text() == state_before
 
 
+def test_init_is_wrapped_not_passthrough() -> None:
+    assert "init" in commands.WRAPPED_SUBCOMMANDS
+
+
+def test_do_init_rebinds_backend_and_refreshes_state(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    """`tfp init` after a banner key edit must re-resolve and persist the new key."""
+    commands.do_use(config, arg="dev")
+    # Simulate the slot being warm so _decide_init would otherwise skip init.
+    config.data_dir_for("dev").mkdir(parents=True, exist_ok=True)
+    (config.data_dir_for("dev") / "terraform.tfstate").write_text("{}")
+    # Edit the banner to override the resolved backend key.
+    banner = {"header": "terraform", "project": "demo", "state_key": "/edited.tfstate"}
+    tfvars.write_text(f'# {json.dumps(banner)}\nfoo = "bar"\n')
+    run_calls.clear()
+
+    commands.do_init(config)
+
+    # init runs even though the slot was warm (explicit re-init contract),
+    # and carries the freshly-resolved key.
+    cmd = run_calls[0]["cmd"]
+    assert "init" in cmd
+    assert "-reconfigure" in cmd
+    idx = cmd.index("-backend-config")
+    # Leading slash stripped (azurerm would otherwise build `tfstates//...`).
+    assert cmd[idx + 1] == "key=edited.tfstate"
+    # Saved slot state reflects the new key, so `tfp status` won't be stale.
+    state = load_state(config, "dev")
+    assert state is not None
+    assert state.backend_config["key"] == "edited.tfstate"
+
+
+def test_do_init_does_not_move_active_pointer(
+    config: Config, tfvars: pathlib.Path, run_calls: list[dict[str, object]]
+) -> None:
+    """`tfp -s dev init` re-binds dev without making it the active slot."""
+    commands.do_use(config, arg="dev")
+    config.active_file.write_text("other\n")
+    run_calls.clear()
+
+    commands.do_init(config, slot="dev")
+
+    assert config.active_file.read_text().strip() == "other"
+    assert load_state(config, "dev") is not None
+
+
+def test_do_init_requires_active_slot(config: Config, tfvars: pathlib.Path) -> None:
+    with pytest.raises(commands.NoActiveSlotError):
+        commands.do_init(config)
+
+
 def test_plan_targets_and_replaces(
     config: Config, tfvars: pathlib.Path, save_dev_state: Callable[..., MyState], run_calls: list[dict[str, object]]
 ) -> None:
@@ -297,11 +349,12 @@ def test_do_use_honours_banner_state_key(
 ) -> None:
     _write_banner_tfvars(
         tfvars,
-        {"header": "terraform", "project": "demo", "state_key": "shared/global.tfstate"},
+        {"header": "terraform", "project": "demo", "state_key": "/shared/global.tfstate"},
     )
     commands.do_use(config, arg="dev")
     state = load_state(config, "dev")
     assert state is not None
+    # Leading slash stripped for the azurerm blob key; rest preserved.
     assert state.backend_config == {"key": "shared/global.tfstate"}
 
 

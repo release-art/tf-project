@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.3] - 2026-06-26
+
+### Fixed
+- **`tfp init` now re-binds the backend instead of reusing a stale one.**
+  Previously `tfp init` fell through to a bare `terraform init`, which
+  silently reused the backend already cached in `.terraform/` from the last
+  `tfp use` - so editing a banner's `state_key` / `backend_config` and
+  running `tfp init` left the slot pinned to the *old* remote state key
+  with no warning (and `tfp status` kept reporting the stale key). `init`
+  is now a wrapped command that re-resolves the live banner, runs
+  `terraform init -reconfigure` with the freshly-resolved `-backend-config`,
+  re-locks providers, and refreshes the saved slot state - the same backend
+  binding `tfp use` performs. Unlike `use`, it operates on the active slot
+  (honouring `-s` / `TFP_SLOT`) and does not move the active-slot pointer.
+  `tfp self trace init` traces the resulting argv.
+- **Banner `state_key` must be an absolute, normalised pure POSIX path.**
+  tf-project is opinionated here: a `state_key` has to start with `/` and be
+  already normalised. Relative keys, backslashes, `.`/`..` segments,
+  redundant `//`, and trailing slashes are now rejected with a clear banner
+  error rather than silently rewritten - so the remote-state blob a banner
+  targets is unambiguous from the text alone. The one transformation applied
+  to a valid key is stripping its single leading slash: the azurerm backend
+  prepends the container name, so `/site-monitor.tfstate` previously produced
+  a double-slashed blob name (`.../tfstates//site-monitor.tfstate`) and now
+  resolves to `site-monitor.tfstate`.
+
 ## [0.2.2] - 2026-05-24
 
 ### Added

@@ -159,9 +159,7 @@ def test_resolve_backend_config_strips_leading_slash(
         "///",  # empty after stripping
     ],
 )
-def test_resolve_backend_config_rejects_impure_state_key(
-    config: Config, tfvars: pathlib.Path, state_key: str
-) -> None:
+def test_resolve_backend_config_rejects_impure_state_key(config: Config, tfvars: pathlib.Path, state_key: str) -> None:
     """tf-project is opinionated: non-absolute / un-normalised keys must raise."""
     b = Banner.model_validate({"header": "terraform", "project": "demo", "state_key": state_key})
     with pytest.raises(banner.BannerError, match="state_key"):

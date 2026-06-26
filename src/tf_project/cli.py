@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import pathlib
 import sys
-from typing import Annotated
+from typing import Annotated, Any
 
-import click
 import typer
 from click.shell_completion import CompletionItem
 
@@ -64,7 +63,13 @@ app = typer.Typer(
 )
 
 
-def _complete_tfvars(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+# Shell-completion callbacks. typer vendors its own click fork (`typer._click`),
+# so its `shell_complete` stub expects that fork's `Context` / `Parameter` /
+# `CompletionItem` - which are distinct types from the real `click` package we
+# build items with. The objects are interchangeable at runtime; the annotations
+# are deliberately loose (`Any`) so pyright accepts the callbacks against typer's
+# vendored signature without us importing from `typer._click` private modules.
+def _complete_tfvars(ctx: Any, param: Any, incomplete: str) -> list[Any]:
     """Tab-completion: list tfvars files under config.tfvars_dir, labelled by project."""
     try:
         cfg = Config.discover()
@@ -90,7 +95,7 @@ def _complete_tfvars(ctx: click.Context, param: click.Parameter, incomplete: str
     return out
 
 
-def _complete_slot(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+def _complete_slot(ctx: Any, param: Any, incomplete: str) -> list[Any]:
     """Tab-completion: slot names from the tfvars dir."""
     try:
         cfg = Config.discover()
@@ -103,7 +108,7 @@ def _complete_slot(ctx: click.Context, param: click.Parameter, incomplete: str) 
     return out
 
 
-def _complete_use_arg(ctx: click.Context, param: click.Parameter, incomplete: str) -> list[CompletionItem]:
+def _complete_use_arg(ctx: Any, param: Any, incomplete: str) -> list[Any]:
     """Tab-completion for `tfp use`: slot names + tfvars paths."""
     return _complete_slot(ctx, param, incomplete) + _complete_tfvars(ctx, param, incomplete)
 

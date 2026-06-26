@@ -6,6 +6,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.3] - 2026-06-26
 
+### Changed
+- **Raised the minimum `typer` to `>=0.26.0`** (was `>=0.21.2`). That series
+  vendors its own click fork (`typer._click`) and drops the standalone
+  `click` dependency. Shell-completion callbacks are now wired through
+  typer's native `autocompletion=` API returning `(value, help)` tuples, so
+  `tfp` no longer imports the `click` package directly - matching the
+  environment we lock and test against.
+
 ### Fixed
 - **`tfp init` now re-binds the backend instead of reusing a stale one.**
   Previously `tfp init` fell through to a bare `terraform init`, which

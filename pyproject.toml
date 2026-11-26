@@ -34,14 +34,7 @@ maintainers = [
 
 dynamic = ["version"]
 
-requires-python = ">=3.11"
-
 license = "MIT"
-
-dependencies = [
-    "typer>=0.26.0",
-    "pydantic>=2.13.4",
-]
 
 readme = "README.md"
 
@@ -50,23 +43,15 @@ classifiers = [
     "Environment :: Console",
     "Intended Audience :: Developers",
     "Intended Audience :: System Administrators",
-    "Operating System :: POSIX",
     "Operating System :: MacOS",
-    "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12",
-    "Programming Language :: Python :: 3.13",
-    "Programming Language :: Python :: 3.14",
+    "Operating System :: Microsoft :: Windows",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Rust",
     "Topic :: Software Development :: Build Tools",
     "Topic :: System :: Installation/Setup",
     "Topic :: System :: Systems Administration",
     "Topic :: Utilities",
-    "Typing :: Typed",
 ]
-
-[project.scripts]
-tf-project = "tf_project.cli:main"
-tfp = "tf_project.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/release-art/tf-project"
@@ -77,185 +62,11 @@ Issues = "https://github.com/release-art/tf-project/issues"
 Releases = "https://github.com/release-art/tf-project/releases"
 
 [build-system]
-requires = ["pdm-backend"]
-build-backend = "pdm.backend"
+requires = ["maturin>=1.9.4,<2"]
+build-backend = "maturin"
 
-# For working with PDM, including configuration and usage see:
-#
-#     https://pdm.fming.dev/latest/
-#     https://pdm.fming.dev/latest/reference/pep621/
-#     https://pdm.fming.dev/latest/reference/cli/
-#
-[tool.pdm]
-distribution = true
-
-[tool.pdm.build]
-package-dir = "src"
-includes = ["src/tf_project", "src/tf_project/py.typed"]
-excludes = [
-    "docs",
-    "build",
-    "dist",
-    "tests",
-    ".pytest_cache",
-    "*.pyc",
-    "*.env",
-    "*__pycache__*",
-]
-source-includes = [
-    "README.md",
-    "CHANGELOG.md",
-]
-editable-backend = "path"
-
-[tool.pdm.version]
-# Version is derived from the latest matching git tag at build time.
-# Release tags look like `v1.2.3`; the leading `v` is stripped for PEP 440.
-# Outside a tagged commit (CI on main, local dev), pdm-backend falls back
-# to `fallback_version` so the build still succeeds.
-source = "scm"
-tag_regex = '^v(?P<version>\d+\.\d+\.\d+.*)$'
-fallback_version = "0.0.0.dev0"
-
-[tool.pdm.scripts]
-tf-project = {call = "tf_project.cli:main"}
-tfp = {call = "tf_project.cli:main"}
-
-[tool.pyright]
-pythonVersion = "3.11"
-venvPath = "."
-venv = ".venv"
-include = ["src/tf_project"]
-typeCheckingMode = "standard"
-reportMissingTypeStubs = false
-
-[tool.ruff]
-target-version = "py311"
-lint.select = [
-    "A",
-    "B",
-    "C",
-    "E",
-    "F",
-    "I",
-    "W",
-    "N",
-    "C4",
-    "T20",
-    "PTH",
-]
-lint.ignore = ["N802", "F841"]
-line-length = 120
-
-[tool.ruff.format]
-line-ending = "lf"
-
-[tool.ruff.lint.per-file-ignores]
-"__init__.py" = [
-    "F401",
-    "E402",
-]
-"bin/**/*.py" = [
-    "T201",
-]
-"src/tf_project/cli.py" = [
-    "B008",  # typer.Option() as default arg
-    "C901",  # `main` is necessarily a long dispatch
-]
-"src/tf_project/banner.py" = [
-    "T201",  # banner extras warning prints to stderr
-]
-"src/tf_project/migrate.py" = [
-    "T201",  # migration breadcrumb prints to stderr
-    "C901",  # legacy migration is a linear flow of guard clauses
-]
-"src/tf_project/self_commands.py" = [
-    "C901",  # do_self_trace's match statement reads as a flat dispatch table
-]
-"src/tf_project/commands.py" = [
-    "T201",  # print() - user-facing CLI output
-]
-"src/tf_project/terraform.py" = [
-    "T201",  # print() - dry-run / verbose / error output to stderr
-]
-
-[tool.ruff.lint.isort]
-order-by-type = true
-combine-as-imports = true
-force-wrap-aliases = true
-known-first-party = ["tf_project"]
-forced-separate = ["tests"]
-
-# For ``pytest`` configuration, including TOML-specific configuration see:
-#
-#     https://docs.pytest.org/en/7.3.x/reference/customize.html#configuration
-#     https://docs.pytest.org/en/7.3.x/reference/customize.html#pyproject-toml
-#
-[tool.pytest.ini_options]
-pythonpath = "src"
-addopts = """\
-    --cache-clear \
-    --code-highlight=yes \
-    --color=yes \
-    --cov=src \
-    --cov-config=pyproject.toml \
-    --cov-report=xml \
-    --cov-report=html \
-    --cov-report=term-missing:skip-covered \
-    -ra \
-    --tb=native \
-    --verbosity=3 \
-    -m "not integration" \
-"""
-filterwarnings = [
-    "ignore::DeprecationWarning"
-]
-python_files = ["test_*.py"]
-python_classes = ["Test", "Acceptance"]
-python_functions = ["test"]
-testpaths = [
-    "tests/",
-]
-markers = [
-    "integration: requires a real `terraform` binary on PATH",
-]
-
-# For ``coverage`` configuration see the reference from version ``7.4.1``:
-#
-#     https://coverage.readthedocs.io/en/7.4.1/config.html
-#
-[tool.coverage.run]
-branch = true
-omit = [
-    "./build",
-    "./dist",
-    "./docs",
-    "*/tests*",
-    ".pytest_cache",
-    "*.pyc",
-    "*.env",
-    "*__pycache__*",
-    "__version__.py",
-]
-source = ["src"]
-
-[tool.coverage.report]
-precision = 3
-show_missing = true
-skip_covered = true
-skip_empty = true
-sort = "Name"
-
-[dependency-groups]
-dev = [
-    "pytest>=9.0.3",
-    "pytest-cov",
-    "pytest-mock>=3.15.1",
-    "coverage[toml]",
-    "ruff>=0.15.13",
-    "pyright>=1.1.409",
-]
-build = [
-    "pip>=23.1.2",
-    "twine",
-]
+# The wheel holds the two programs `tf-project` and `tfp`, built from rust/ (no Python inside). Its version is
+# rust/Cargo.toml's: 0.0.0 in the tree, set from the release tag (v1.2.3) by bin/rust/set-version.sh.
+[tool.maturin]
+manifest-path = "rust/Cargo.toml"
+bindings = "bin"

@@ -1,4 +1,4 @@
-# Lint and test the package on each push / PR against main.
+# Every gate on each push / PR against main, and a wheel per platform that installs and runs.
 
 name: CI
 
@@ -6,8 +6,6 @@ on:
   push:
     branches:
       - main
-    tags:
-      - 'v*.*.*'
   pull_request:
     branches:
       - main
@@ -23,107 +21,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lint:
-    runs-on: ubuntu-latest
-    env:
-      PDM_IGNORE_SAVED_PYTHON: 1
-      PDM_NON_INTERACTIVE: 1
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-
-      - name: Install PDM
-        run: |
-          python -m pip install pdm
-          pdm use python
-          pdm info -v
-
-      - name: Install dependencies
-        run: pdm install -v
-
-      - name: Ruff (lint)
-        run: pdm run ruff check src tests
-
-      - name: Ruff (format check)
-        run: pdm run ruff format --check src tests
-
-      - name: Pyright
-        run: pdm run pyright src
-
-      - name: ShellCheck (bin scripts)
-        uses: ludeeus/action-shellcheck@2.0.0
-        with:
-          scandir: ./bin
-
-      - name: Build sdist + wheel
-        run: pdm build
-
-      - name: Twine check (PyPI metadata + README rendering)
-        run: |
-          pdm self add twine
-          pdm run twine check --strict dist/*
-
-  test:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest]
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-    env:
-      PYTHONDEVMODE: 1
-      PDM_IGNORE_SAVED_PYTHON: 1
-      PDM_NON_INTERACTIVE: 1
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
-      - name: Set Variables
-        id: set_variables
-        shell: bash
-        run: |
-          echo "PY=$(python -c 'import hashlib, sys;print(hashlib.sha256(sys.version.encode()+sys.executable.encode()).hexdigest())')" >> $GITHUB_OUTPUT
-          echo "PIP_CACHE=$(pip cache dir)" >> $GITHUB_OUTPUT
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ${{ steps.set_variables.outputs.PIP_CACHE }}
-          key: ${{ runner.os }}-pip-${{ steps.set_variables.outputs.PY }}
-
-      - name: Cache venv
-        uses: actions/cache@v4
-        with:
-          path: .venv
-          key: venv-1-${{ runner.os }}-py${{ matrix.python-version }}-${{ hashFiles('pdm.lock') }}
-          restore-keys: |
-            venv-1-${{ runner.os }}-py${{ matrix.python-version }}-
-
-      - name: Install PDM
-        run: |
-          python -m pip install pdm
-          pdm use python
-          pdm info -v
-
-      - name: Install dependencies
-        run: |
-          pdm use -f .venv
-          pdm install -v
-
-      - name: Pytest
-        run: pdm run pytest
-
   rust:
-    # Every gate for the Rust port in rust/: format, clippy, docs, licences, tests, 100% coverage.
+    # Format, clippy, docs, licences, tests, 100% coverage.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
@@ -139,9 +38,16 @@ jobs:
         env:
           NEXTEST_PROFILE: ci
 
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ludeeus/action-shellcheck@2.0.0
+        with:
+          scandir: ./bin
+
   wheels:
-    # The Rust program packaged as a py3-none wheel per platform, installed into a clean venv and run.
-    # Built from rust/ alone: the root pyproject.toml still ships the Python package until the cutover.
+    # The programs packaged as a py3-none wheel per platform, installed into a clean venv and run.
     needs: rust
     strategy:
       fail-fast: false
@@ -157,20 +63,31 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
+      # maturin runs cargo from the root, where rust/rust-toolchain.toml is not seen: pass the pinned toolchain.
       - run: echo "RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust/rust-toolchain.toml)" >> "$GITHUB_ENV"
         shell: bash
       - uses: PyO3/maturin-action@v1
         with:
-          working-directory: rust
           rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
           target: ${{ matrix.target }}
-          args: --release --bindings bin --out dist
+          args: --release --out dist
           manylinux: auto
       - name: Install on a clean interpreter and run both names
         shell: bash
         run: |
           python -m venv clean
           bin=clean/bin; [ -d clean/Scripts ] && bin=clean/Scripts
-          "$bin/pip" install rust/dist/*.whl
+          "$bin/pip" install dist/*.whl
           "$bin/tf-project" --version
           "$bin/tfp" --help
+
+  sdist:
+    # The source distribution, and the PyPI metadata (README rendering) both kinds of artifact carry.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - run: pipx run twine check --strict dist/*

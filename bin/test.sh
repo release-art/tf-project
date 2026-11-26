@@ -1,7 +1,3 @@
 #!/bin/bash -e
-
-THIS_DIR=$(dirname "${BASH_SOURCE[0]}")
-PROJECT_ROOT=$(realpath "${THIS_DIR}/..")
-cd "${PROJECT_ROOT}"
-
-exec pdm run pytest "${@:-tests/}"
+# Every gate for the Rust crate; see bin/rust/check.sh.
+exec "$(dirname "${BASH_SOURCE[0]}")/rust/check.sh" "$@"

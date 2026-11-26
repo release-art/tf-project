@@ -4,6 +4,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **Rewritten in Rust.** `tf-project` / `tfp` is now a single native program,
+  still installed from PyPI (`pip install tf-project`). The wheels carry only
+  the program (`py3-none-<platform>`), built for Linux x86_64 and arm64,
+  macOS arm64 and Windows x86_64. Python is no longer needed at runtime and
+  startup is instant.
+- **No more implicit passthrough.** Unknown subcommands used to be forwarded
+  to `terraform`; they are now an error. Use `tfp tf <args>` to run any
+  Terraform command in the active slot (`tfp tf validate`,
+  `tfp tf force-unlock <ID>`).
+- Terraform flags may follow a wrapped subcommand in any order
+  (`tfp plan -lock=false -t a`); `--` still works.
+- `tfp tf` waits for Terraform instead of replacing itself with it, so
+  `tfp last` records the real exit code for every invocation. Ctrl-C still
+  reaches Terraform, and tfp exits with Terraform's code.
+- The apply / state locks now work on Windows too.
+- Error messages are worded differently in places.
+- `tfp self snapshot list` also shows each snapshot's time.
+
+### Removed
+- The Python API (`import tf_project`).
+- The automatic migration of the pre-slot `tmp/my_terraform_state.json`
+  layout. Upgrade through 0.2.x first if you still have one.
+- Shell completion via typer's `--install-completion`.
+
 ## [0.2.3] - 2026-06-26
 
 ### Changed

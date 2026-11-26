@@ -1,7 +1,6 @@
 # tf-project
 
 [![PyPI](https://img.shields.io/pypi/v/tf-project.svg)](https://pypi.org/project/tf-project/)
-[![Python](https://img.shields.io/pypi/pyversions/tf-project.svg)](https://pypi.org/project/tf-project/)
 [![License](https://img.shields.io/github/license/release-art/tf-project.svg)](https://github.com/release-art/tf-project/blob/main/LICENSE)
 
 A thin, opinionated **Terraform / OpenTofu** wrapper for multi-environment
@@ -21,9 +20,9 @@ time you switch, this tool replaces that ritual with `tfp use dev`.
   swapping between them is instant when both are warm.
 - **Shared provider cache** via `TF_PLUGIN_CACHE_DIR`. Providers download
   once and link into every slot's `.terraform/providers/`.
-- **Versioned, pydantic-validated state files.** Every persisted JSON carries
+- **Versioned, strictly validated state files.** Every persisted JSON carries
   `schema_version`; unknown fields fail loudly (except in user-authored
-  banners, where they are tolerated and logged).
+  banners, where they are tolerated and reported by `tfp self banner check`).
 - Pluggable tfvars preprocessing - defaults to [1Password's `op inject`][op]
   so you can keep `op://...` references in tfvars committed to git.
 
@@ -32,10 +31,13 @@ time you switch, this tool replaces that ritual with `tfp use dev`.
 ## Install
 
 ```sh
-pip install tf-project
+pip install tf-project      # or: uv tool install tf-project / pipx install tf-project
 ```
 
-The CLI is exposed as both `tf-project` and the shorter alias `tfp`.
+The CLI is exposed as both `tf-project` and the shorter alias `tfp`. It is a
+single native program (written in Rust); the PyPI package only delivers it.
+Wheels are published for Linux (x86_64, arm64), macOS (arm64) and Windows
+(x86_64), and work with any Python 3.
 
 ## Configure
 
@@ -57,7 +59,8 @@ tfvars_dir       = "tfvars"               # scanned for slots; used by `tfp fmt`
 tmp_dir          = "tmp"                  # slot dirs + plugin cache land here
 state_key_prefix = "terraform/azure/"     # remote backend key prefix
 
-# Optional. Defaults to `shutil.which("terraform")` at config-load time.
+# Optional. Defaults to `terraform` as found on PATH. A bare name (`tofu`) is
+# looked up on PATH when run; a path is taken relative to the project root.
 # terraform_binary = "bin/terraform-1.7.5"
 
 # Optional. Defaults to `<tmp_dir>/plugin-cache`. Set to "" to disable.
@@ -104,8 +107,8 @@ Banner fields:
 | `env`            | JSON object of `string → string` env vars passed to terraform when running against this slot.                                     |
 | `backend_config` | JSON object of extra `-backend-config k=v` pairs. Wins over the config-level `[tf_project.backend_config]` table.                |
 
-Unknown banner fields are tolerated (forward-compatible across tfp versions)
-but logged to stderr - so a typo doesn't disappear silently.
+Unknown banner fields are tolerated (forward-compatible across tfp versions);
+`tfp self banner check` names them, so a typo doesn't disappear silently.
 
 ## Usage
 
@@ -157,7 +160,7 @@ tfp use prod                    # writes tmp/active (affects all shells without 
 
 ### Global flags
 
-- `--verbose` - echo the terraform argv to stderr before exec.
+- `--verbose` - echo the terraform argv to stderr before running it.
 - `--dry-run` - print the argv and skip execution.
 - `-s/--slot <name>` - operate against a specific slot for one invocation.
 
@@ -208,7 +211,7 @@ stale lock on the tfstate. Subsequent runs fail with "state locked".
 ```sh
 tfp self lock status            # lease + lock metadata (exits 2 if locked)
 tfp self lock break             # break the lock (prompts for confirmation; -y to skip)
-tfp force-unlock <LOCK_ID>      # backend-agnostic, via terraform passthrough
+tfp tf force-unlock <LOCK_ID>   # backend-agnostic, via `tfp tf`
 ```
 
 `tfp self lock` auto-detects the backend from the active slot's saved state:
@@ -255,24 +258,27 @@ banner's `project`, `state_key`, `backend_config`, and `env`. `tfp apply`
 refuses to run if any of those drift between plan and apply. Pass
 `--force` to override.
 
-### Passthrough to `terraform`
+### Any other Terraform command: `tfp tf`
 
-Any subcommand not in the wrapped list above is forwarded to `terraform`
-verbatim, prefixed with `-chdir=<source_root>` and the env from the active
-slot's saved state:
+`tfp tf ...` runs any Terraform command verbatim in the active slot, prefixed
+with `-chdir=<source_root>` and the env from the slot's saved state. With no
+active slot it runs Terraform as is:
 
 ```sh
-tfp validate                          # terraform -chdir=... validate
-tfp workspace list                    # per-slot workspace state via TF_DATA_DIR
-tfp providers schema -json
-tfp version                           # works without an active slot
+tfp tf validate                       # terraform -chdir=... validate
+tfp tf workspace list                 # per-slot workspace state via TF_DATA_DIR
+tfp tf providers schema -json
+tfp tf version                        # works without an active slot
 ```
 
-Wrapped subcommands also accept extra terraform flags, which are appended
-to the underlying invocation:
+Unknown subcommands are not forwarded: `tfp validate` is an error, so a typo
+never reaches Terraform by accident.
+
+Wrapped subcommands accept Terraform's own flags anywhere after the
+subcommand, appended to the underlying invocation; `--` works too:
 
 ```sh
-tfp plan -t module.foo -- -detailed-exitcode -compact-warnings
+tfp plan -t module.foo -detailed-exitcode -compact-warnings
 tfp apply -- -parallelism=20
 ```
 
@@ -295,44 +301,39 @@ tfp self trace <subcommand>         # print the argv tfp would build; no exec
 tfp self lock status                # remote-state lock state (azurerm or s3+dynamodb)
 tfp self lock break                 # polite-by-default release; --blunt skips terraform
 tfp self providers lock             # cross-platform `terraform providers lock`
-tfp force-unlock <LOCK_ID>          # backend-agnostic, via terraform passthrough
+tfp tf force-unlock <LOCK_ID>       # backend-agnostic, via `tfp tf`
 ```
-
-## Migrating from a pre-slot install
-
-The first time you run any `tfp` command after upgrading, tf-project detects
-the legacy `tmp/my_terraform_state.json` and promotes it into the new layout
-under `tmp/slots/<slot>/`, sets `tmp/active`, and leaves a one-line
-`tmp/MIGRATED-<UTC-timestamp>.txt` breadcrumb. The first command afterwards
-will repopulate the slot's `.terraform/` from the plugin cache.
-
-If the legacy state references a tfvars that has since moved or been deleted,
-migration logs a warning, deletes the legacy file, and asks you to run
-`tfp use <slot>` to start fresh.
 
 ## Development
 
+The program lives in `rust/`. You need the toolchain pinned in
+`rust/rust-toolchain.toml` (rustup installs it on first use) plus
+`cargo-nextest`, `cargo-llvm-cov` and `cargo-deny`.
+
 ```sh
-pdm install
-pdm run ruff check src tests
-pdm run pyright src
-pdm run pytest                  # unit tests
-pdm run pytest -m integration   # smoke tests (need `terraform` on PATH)
+bin/rust/check.sh               # fmt, clippy, docs, licences, tests, 100% coverage
+bin/rust/check.sh --fix         # format and apply clippy's fixes first
+bin/run.sh status               # run tfp from the source tree
+pip install .                   # build and install the wheel locally (maturin)
 ```
+
+Tests use fake `terraform` / `az` / `aws` scripts, so they run on macOS and
+Linux without any of those installed. Run them with nextest (as check.sh
+does): each test gets its own process.
 
 ## Release
 
 Releases are **tag-driven**. The wheel's version comes from the git tag,
-not a code edit - `src/tf_project/__version__.py` exists but reads the
-installed distribution's metadata at runtime; there is nothing in code to
-bump.
+not a code edit: `rust/Cargo.toml` says `0.0.0`, and the release workflow
+writes the tag into it (`bin/rust/set-version.sh`) before building.
 
 1. Move the `## [Unreleased]` block in `CHANGELOG.md` under a new
    `## [X.Y.Z] - YYYY-MM-DD` heading. Commit to `main`.
 2. Tag the commit: `git tag vX.Y.Z && git push origin vX.Y.Z`.
 3. The **Release** workflow fires on the tag push:
    - Re-runs CI against the tagged commit.
-   - Builds sdist + wheel with the version pinned from the tag.
+   - Builds a wheel per platform (Linux x86_64 + arm64, macOS arm64,
+     Windows x86_64) and the sdist, with the version set from the tag.
    - Signs both with [Sigstore][sigstore] (keyless, transparency-logged).
    - Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
    - Creates a GitHub Release with the extracted changelog section and the

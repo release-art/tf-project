@@ -8,6 +8,8 @@ use std::process::ExitCode;
 
 use clap::Parser;
 
+pub mod models;
+
 /// Terraform / OpenTofu wrapper with named per-tfvars slots.
 #[derive(Debug, Parser)]
 #[command(name = "tf-project", disable_version_flag = true)]

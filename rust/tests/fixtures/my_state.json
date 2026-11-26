@@ -1,0 +1,16 @@
+{
+    "schema_version": 1,
+    "slot": "dev",
+    "project": "demo",
+    "tfvars": "/w/tfvars/dev.tfvars",
+    "source_root": "/w/terraform/demo",
+    "tfplan_location": "/w/tmp/slots/dev/my.tfplan",
+    "environ": {
+        "ARM_X": "1",
+        "TF_VAR_y": "ü"
+    },
+    "backend_config": {
+        "container_name": "c",
+        "key": "demo/dev.tfstate"
+    }
+}

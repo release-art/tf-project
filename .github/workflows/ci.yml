@@ -89,6 +89,20 @@ jobs:
           mkdir unpacked
           if [[ "$archive" == *.zip ]]; then unzip -q "$archive" -d unpacked; else tar xzf "$archive" -C unpacked; fi
           unpacked/*/tfp --version
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_wrapper: false
+      - name: Use, plan and apply a local-backend project (takes the slot and apply locks on each OS)
+        shell: bash
+        run: |
+          tfp=$(cd unpacked/* && pwd)/tfp
+          mkdir -p smoke/terraform/demo smoke/tfvars && cd smoke
+          echo '[tf_project]' > tf_project.toml
+          printf 'terraform {\n  backend "local" {}\n}\n' > terraform/demo/main.tf
+          echo '# {"header": "terraform", "project": "demo"}' > tfvars/dev.tfvars
+          "$tfp" use dev
+          "$tfp" plan
+          "$tfp" apply
 
   sdist:
     # The source distribution, and the PyPI metadata (README rendering) both kinds of artifact carry.

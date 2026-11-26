@@ -18,9 +18,12 @@ fn lock_path(path: &Path) -> PathBuf {
 fn open_lock(path: &Path) -> Result<File> {
     let dir = path.parent().unwrap_or(Path::new("/"));
     std::fs::create_dir_all(dir).map_err(io_error(dir))?;
+    // Read access, not append: Windows' LockFileEx refuses an append-only handle (os error 5).
     File::options()
         .create(true)
-        .append(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
         .open(path)
         .map_err(io_error(path))
 }

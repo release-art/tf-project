@@ -4,6 +4,13 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] - 2026-11-26
+
+### Fixed
+- **Windows:** every command that saves a slot's state failed with
+  `state.json.lock: Access is denied. (os error 5)`. CI now runs `use`,
+  `plan` and `apply` on a local-backend project on every platform.
+
 ## [0.3.2] - 2026-11-26
 
 ### Added

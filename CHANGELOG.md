@@ -4,34 +4,38 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.1] - 2026-11-26
+
+### Added
+- **Azure Key Vault secrets.** `{{ az-kv://<vault>/<secret>[/<version>] }}`
+  references in tfvars are read with Microsoft's Azure SDK for Rust, signing
+  in through the Azure CLI once per vault and reading each vault's secrets
+  concurrently.
+- **`secrets_config` in the banner**, keyed by scheme, configures each secret
+  source. `az-kv` takes `tenant` and `subscription` (defaulting to the
+  banner's `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID`) and `vault_url` (for
+  sovereign clouds). `op` takes none.
+- `tfp self doctor` reports each secret scheme the tfvars use and whether its
+  tool (`op`, `az`) is installed.
+- **Documentation** in `docs/`: configuration, commands, secrets, safety and
+  recovery, and development. The README is now a short introduction and tour.
 
 ### Changed
-- **tfp resolves secret references itself.** `{{ scheme://… }}` references
-  in tfvars are collected, grouped by scheme and fetched from each scheme's
-  source in one batch. `op://` goes to 1Password through a single
-  `op inject` call over just the references, so values with newlines or
-  quotes come back intact. This is the base for adding other secret sources
-  per scheme.
+- **tfp resolves secret references itself.** It collects the
+  `{{ scheme://… }}` references in a tfvars file, fetches each scheme's
+  together, and writes the filled-in copy to a private directory that is
+  shredded afterwards. `op://` references are read in a single `op inject`
+  call, so values with newlines or quotes come back intact.
 - References are found anywhere in a tfvars file, including inside
   multi-line strings and heredocs, with or without spaces inside the braces.
   Other `{{ … }}` (Go templates and the like) is left as written.
-- **Azure Key Vault source.** `{{ az-kv://<vault>/<secret>[/<version>] }}`
-  references are read with Microsoft's Azure SDK for Rust, signing in through
-  the Azure CLI once per vault and reading each vault's secrets concurrently.
-- **`secrets_config` in the banner** configures each source, keyed by scheme.
-  `az-kv` takes `tenant`, `subscription` (defaulting to the banner's
-  `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID`) and `vault_url` (for sovereign
-  clouds). `op` takes none.
-- Release builds are stripped and link-time optimised, which keeps the
-  programs at about 5.5 MB with the Azure SDK included.
 - A reference with an unknown scheme is an error naming the file and the
   scheme, instead of reaching Terraform unresolved.
 - A tfvars file without references is used as it is: no copy, and no `op`
   call.
-- `tfp self doctor` reports each secret scheme in use and whether its source
-  is available.
 - `tfp self init` no longer writes a `[tf_project.secrets]` section.
+- Release builds are stripped and link-time optimised, keeping the programs at
+  about 5.5 MB with the Azure SDK included.
 
 ### Deprecated
 - `[tf_project.secrets] command`. Configs still carrying the old default

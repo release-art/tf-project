@@ -7,10 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.3.1] - 2026-11-26
 
 ### Added
-- **Azure Key Vault secrets.** `{{ az-kv://<vault>/<secret>[/<version>] }}`
-  references in tfvars are read with Microsoft's Azure SDK for Rust, signing
-  in through the Azure CLI once per vault and reading each vault's secrets
-  concurrently.
+- **Azure Key Vault.** `{{ az-kv://<vault>/<kind>/<name>[/<version>] }}`
+  references in tfvars, following Key Vault's own URLs, read with Microsoft's
+  Azure SDK for Rust: `secrets/` gives the value, `keys/` the public key as a
+  JSON Web Key, and `certificates/` the public certificate as PEM. tfp signs
+  in through the Azure CLI once per run and reads everything concurrently.
 - **`secrets_config` in the banner**, keyed by scheme, configures each secret
   source. `az-kv` takes `tenant` and `subscription` (defaulting to the
   banner's `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID`) and `vault_url` (for

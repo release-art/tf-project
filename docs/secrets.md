@@ -7,7 +7,7 @@ commit only ever hold references.
 ```hcl
 # {"header": "terraform", "project": "api"}
 db_password = "{{ op://Infra/postgres-prod/password }}"
-api_key     = "{{ az-kv://api-prod-kv/api-key }}"
+api_key     = "{{ az-kv://api-prod-kv/secrets/api-key }}"
 ```
 
 A reference is `{{ scheme://… }}`. The scheme picks where the secret comes
@@ -16,7 +16,7 @@ from:
 | Scheme | Reference | Comes from |
 | --- | --- | --- |
 | `op://` | `op://<vault>/<item>/[<section>/]<field>` | 1Password |
-| `az-kv://` | `az-kv://<vault>/<secret>[/<version>]` | Azure Key Vault |
+| `az-kv://` | `az-kv://<vault>/<secrets\|keys\|certificates>/<name>[/<version>]` | Azure Key Vault |
 
 References work anywhere in the file: as a whole value, inside a longer
 string, or in a multi-line string or heredoc. Names may contain spaces
@@ -37,7 +37,7 @@ When `tfp plan`, `apply`, `refresh`, `destroy` or `import` needs the tfvars:
 
 1. tfp finds every reference in the file.
 2. It fetches all references of one scheme together: one 1Password call for
-   all the `op://` ones, and one Azure sign-in per vault for `az-kv://`.
+   all the `op://` ones, and a single Azure sign-in for all the `az-kv://` ones.
 3. It writes a filled-in copy into a private temporary directory and gives
    that file to Terraform.
 4. Afterwards it overwrites the copy with zeros and deletes it.
@@ -67,16 +67,36 @@ you approve access once per command. The reference format is the one
 ## Azure Key Vault (`az-kv://`)
 
 Needs the [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli),
-signed in with `az login`, and permission to read secrets in the vault. Name
-the vault and the secret, and optionally a version (the latest otherwise):
+signed in with `az login`, and permission to read the objects you reference.
+A reference names the vault, the kind of object, its name and optionally a
+version (the latest otherwise), following Key Vault's own URLs:
 
 ```hcl
-db_password = "{{ az-kv://api-prod-kv/db-password }}"
-old_key     = "{{ az-kv://api-prod-kv/api-key/0123456789abcdef0123456789abcdef }}"
+db_password = "{{ az-kv://api-prod-kv/secrets/db-password }}"
+old_key     = "{{ az-kv://api-prod-kv/secrets/api-key/0123456789abcdef0123456789abcdef }}"
+signing_jwk = <<EOT
+{{ az-kv://api-prod-kv/keys/signing }}
+EOT
+tls_cert    = <<EOT
+{{ az-kv://api-prod-kv/certificates/api-tls }}
+EOT
 ```
 
-tfp signs in once per vault and then reads that vault's secrets at the same
-time.
+Keys and certificates contain quotes and line breaks, so put them in a heredoc
+as above rather than in a `"…"` string.
+
+| Kind | You get |
+| --- | --- |
+| `secrets/<name>` | The secret's value. |
+| `keys/<name>` | The key's public part, as the JSON Web Key Key Vault returns, e.g. `{"e":"AQAB","kty":"RSA","n":"…"}`. Key Vault never releases private key material. |
+| `certificates/<name>` | The public certificate, as PEM (`-----BEGIN CERTIFICATE-----` …). |
+
+A certificate *with* its private key is the certificate's backing secret in
+Key Vault, so reference it as `secrets/<certificate name>`: you get it in the
+format the certificate was created with (PEM or base64-encoded PFX).
+
+tfp signs in once, however many vaults and kinds you reference, and then
+reads them all at the same time.
 
 Settings go in the banner's `secrets_config`, under `"az-kv"`. They're often
 unnecessary: tfp falls back to the `ARM_TENANT_ID` and `ARM_SUBSCRIPTION_ID`

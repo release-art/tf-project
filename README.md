@@ -23,7 +23,7 @@ What you get:
   snapshot the remote state first, and `tfp self snapshot restore` puts it
   back.
 - **Secrets out of git.** Tfvars can hold references like
-  `{{ op://Infra/db/password }}` or `{{ az-kv://my-vault/db-password }}`; tfp
+  `{{ op://Infra/db/password }}` or `{{ az-kv://my-vault/secrets/db-password }}`; tfp
   fills them in from 1Password or Azure Key Vault at run time.
 - **Help when things go wrong.** `tfp self doctor` checks your setup, and
   `tfp self lock break` clears a stuck Azure or S3 state lock.

@@ -1352,7 +1352,7 @@ secret_sources:
         chmod(&op, 0o755);
         p.write(
             "tfvars/qa.tfvars",
-            "# {\"header\":\"terraform\",\"project\":\"demo\"}\nk = \"{{ az-kv://kv/s }}\"\n",
+            "# {\"header\":\"terraform\",\"project\":\"demo\"}\nk = \"{{ az-kv://kv/secrets/s }}\"\n",
         );
         let az_check = |p: &Project| {
             let checks = crate::self_commands::do_self_doctor(&p.config(), Some(bin.as_os_str()));

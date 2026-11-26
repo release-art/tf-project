@@ -380,14 +380,11 @@ mod tests {
         let p = with_fake_op("");
         let az = super::key_vault::tests::with_fake_az();
         std::fs::copy(az.path("bin/az"), p.path("bin/az")).unwrap();
-        let vault = std::sync::Arc::new(super::key_vault::tests::FakeVault {
-            secrets: [("db".to_owned(), "kv-secret".to_owned())].into(),
-            ..Default::default()
-        });
+        let vault = super::key_vault::tests::vault(&[("secrets/db", r#"{"value":"kv-secret"}"#)]);
         let banner = r#"# {"header":"terraform","project":"demo","env":{"ARM_TENANT_ID":"11111111-1111-1111-1111-111111111111"},"secrets_config":{"az-kv":{"subscription":"sub-x"}}}"#;
         let src = p.write(
             "tfvars/dev.tfvars",
-            &format!("{banner}\na = \"{{{{ op://v/i/f }}}}\"\nb = \"{{{{ az-kv://kv/db }}}}\"\n"),
+            &format!("{banner}\na = \"{{{{ op://v/i/f }}}}\"\nb = \"{{{{ az-kv://kv/secrets/db }}}}\"\n"),
         );
         let mut s = Streams::default();
         let mut ctx = s.ctx(&p.root);

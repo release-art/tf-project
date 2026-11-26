@@ -1,5 +1,11 @@
-//! Azure Key Vault: `az-kv://<vault>/<secret>[/<version>]`, read with Microsoft's Azure SDK for Rust and signed in
-//! through the Azure CLI (`az login`).
+//! Azure Key Vault: `az-kv://<vault>/<secrets|keys|certificates>/<name>[/<version>]`, read with Microsoft's Azure
+//! SDK for Rust and signed in through the Azure CLI (`az login`).
+//!
+//! What each kind gives:
+//! - `secrets`: the secret's value.
+//! - `keys`: the key's public part, as the JSON Web Key Key Vault returns. Private key material never leaves Key Vault.
+//! - `certificates`: the public certificate, as PEM. The certificate with its private key is the certificate's
+//!   backing secret: `secrets/<certificate name>`.
 //!
 //! Settings (banner `secrets_config."az-kv"`):
 //! - `tenant`: the tenant to sign in to; the banner's `ARM_TENANT_ID` otherwise.
@@ -12,10 +18,16 @@ use std::ffi::{OsStr, OsString};
 use std::path::Path;
 use std::sync::Arc;
 
-use azure_core::http::{ClientOptions, HttpClient, Transport};
+use azure_core::credentials::{AccessToken, TokenCredential, TokenRequestOptions};
+use azure_core::http::{ClientOptions, HttpClient, Response, Transport};
 use azure_identity::{AzureCliCredential, AzureCliCredentialOptions, Executor};
+use azure_security_keyvault_certificates::models::CertificateClientGetCertificateOptions;
+use azure_security_keyvault_certificates::{CertificateClient, CertificateClientOptions};
+use azure_security_keyvault_keys::models::KeyClientGetKeyOptions;
+use azure_security_keyvault_keys::{KeyClient, KeyClientOptions};
 use azure_security_keyvault_secrets::models::SecretClientGetSecretOptions;
 use azure_security_keyvault_secrets::{SecretClient, SecretClientOptions};
+use base64::Engine;
 
 use crate::{Error, Result, io_error};
 
@@ -24,16 +36,24 @@ const SETTINGS: [&str; 3] = ["tenant", "subscription", "vault_url"];
 
 /// What the source needs besides the references.
 pub(super) struct Access<'a> {
+    /// The Azure CLI (`[tf_project.programs] az`): a name on `PATH`, or a path.
+    pub(super) az: &'a str,
     /// Its banner settings.
     pub(super) settings: Option<&'a BTreeMap<String, String>>,
     /// The banner's environment, for the tenant and subscription defaults.
     pub(super) env: &'a BTreeMap<String, String>,
-    /// The Azure CLI (`[tf_project.programs] az`): a name on `PATH`, or a path.
-    pub(super) az: &'a str,
     /// `PATH` for the Azure CLI; tfp's own when none.
     pub(super) search_path: Option<OsString>,
     /// The HTTP client; the SDK's own when none.
     pub(super) http: Option<Arc<dyn HttpClient>>,
+}
+
+/// The three kinds of Key Vault object, by their URL path segment.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Kind {
+    Secret,
+    Key,
+    Certificate,
 }
 
 /// One `az-kv://` reference, taken apart.
@@ -41,29 +61,40 @@ pub(super) struct Access<'a> {
 struct Reference<'a> {
     uri: &'a str,
     vault: &'a str,
+    kind: Kind,
     name: &'a str,
     version: Option<&'a str>,
 }
 
 fn parse(uri: &str) -> Result<Reference<'_>> {
     let parts: Vec<&str> = uri.trim_start_matches("az-kv://").split('/').collect();
-    match parts.as_slice() {
-        [vault, name] | [vault, name, ""] if !vault.is_empty() && !name.is_empty() => Ok(Reference {
-            uri,
-            vault,
-            name,
-            version: None,
-        }),
-        [vault, name, version] if !vault.is_empty() && !name.is_empty() => Ok(Reference {
-            uri,
-            vault,
-            name,
-            version: Some(version),
-        }),
-        _ => Err(Error::Msg(format!(
-            "`{uri}` is not az-kv://<vault>/<secret>[/<version>]"
-        ))),
+    let (vault, kind, name, version) = match parts.as_slice() {
+        [vault, kind, name] | [vault, kind, name, ""] => (*vault, *kind, *name, None),
+        [vault, kind, name, version] => (*vault, *kind, *name, Some(*version)),
+        _ => ("", "", "", None),
+    };
+    let kind = match kind {
+        "secrets" => Kind::Secret,
+        "keys" => Kind::Key,
+        "certificates" => Kind::Certificate,
+        _ => return Err(not_a_reference(uri)),
+    };
+    if vault.is_empty() || name.is_empty() {
+        return Err(not_a_reference(uri));
     }
+    Ok(Reference {
+        uri,
+        vault,
+        kind,
+        name,
+        version,
+    })
+}
+
+fn not_a_reference(uri: &str) -> Error {
+    Error::Msg(format!(
+        "`{uri}` is not az-kv://<vault>/<secrets|keys|certificates>/<name>[/<version>]"
+    ))
 }
 
 /// An SDK error with its causes, which carry the useful part (the Azure CLI's "run `az login`", the service's
@@ -96,7 +127,79 @@ impl Executor for OnPath {
     }
 }
 
-/// The secrets `uris` name, in order. Each vault signs in once, on its first secret; the rest are read concurrently.
+/// A credential that asks the Azure CLI once per scope and hands the same token to every client: one `az` call for
+/// all a run's reads, however many vaults and kinds. Concurrent first requests wait for that one call.
+// ponytail: cached for the run only, which is far shorter than a token's life; no refresh.
+#[derive(Debug)]
+struct SignInOnce {
+    inner: Arc<dyn TokenCredential>,
+    tokens: futures::lock::Mutex<BTreeMap<Vec<String>, AccessToken>>,
+}
+
+#[async_trait::async_trait]
+impl TokenCredential for SignInOnce {
+    async fn get_token(
+        &self,
+        scopes: &[&str],
+        options: Option<TokenRequestOptions<'_>>,
+    ) -> azure_core::Result<AccessToken> {
+        let mut tokens = self.tokens.lock().await;
+        let key: Vec<String> = scopes.iter().map(|s| (*s).to_owned()).collect();
+        if let Some(token) = tokens.get(&key) {
+            return Ok(token.clone());
+        }
+        let token = self.inner.get_token(scopes, options).await?;
+        tokens.insert(key, token.clone());
+        Ok(token)
+    }
+}
+
+/// A Key Vault client for one kind of object.
+enum Client {
+    Secret(SecretClient),
+    Key(KeyClient),
+    Certificate(CertificateClient),
+}
+
+fn client(
+    kind: Kind,
+    url: &str,
+    credential: Arc<dyn TokenCredential>,
+    http: Option<&Arc<dyn HttpClient>>,
+) -> azure_core::Result<Client> {
+    let client_options = ClientOptions {
+        transport: http.cloned().map(Transport::new),
+        ..ClientOptions::default()
+    };
+    Ok(match kind {
+        Kind::Secret => Client::Secret(SecretClient::new(
+            url,
+            credential,
+            Some(SecretClientOptions {
+                client_options,
+                ..SecretClientOptions::default()
+            }),
+        )?),
+        Kind::Key => Client::Key(KeyClient::new(
+            url,
+            credential,
+            Some(KeyClientOptions {
+                client_options,
+                ..KeyClientOptions::default()
+            }),
+        )?),
+        Kind::Certificate => Client::Certificate(CertificateClient::new(
+            url,
+            credential,
+            Some(CertificateClientOptions {
+                client_options,
+                ..CertificateClientOptions::default()
+            }),
+        )?),
+    })
+}
+
+/// The values `uris` name, in order, all read concurrently.
 pub(super) fn key_vault(uris: &[&str], access: Access<'_>) -> Result<Vec<String>> {
     let empty = BTreeMap::new();
     let settings = access.settings.unwrap_or(&empty);
@@ -108,32 +211,34 @@ pub(super) fn key_vault(uris: &[&str], access: Access<'_>) -> Result<Vec<String>
     }
     let refs: Vec<Reference<'_>> = uris.iter().map(|uri| parse(uri)).collect::<Result<_>>()?;
     let setting = |key: &str, env: &str| settings.get(key).or_else(|| access.env.get(env)).cloned();
-    let credential = AzureCliCredential::new(Some(AzureCliCredentialOptions {
+    let cli = AzureCliCredential::new(Some(AzureCliCredentialOptions {
         tenant_id: setting("tenant", "ARM_TENANT_ID"),
         subscription: setting("subscription", "ARM_SUBSCRIPTION_ID"),
         executor: Some(Arc::new(OnPath(az_search_path(access.az, access.search_path)))),
     }))
     .map_err(|e| Error::Msg(format!("Azure CLI sign-in settings: {}", describe(&e))))?;
+    let credential: Arc<dyn TokenCredential> = Arc::new(SignInOnce {
+        inner: cli,
+        tokens: futures::lock::Mutex::new(BTreeMap::new()),
+    });
     let url = settings
         .get("vault_url")
         .map_or("https://{vault}.vault.azure.net/", String::as_str);
-    // One client per vault, shared by its references.
-    let mut clients: BTreeMap<&str, Arc<SecretClient>> = BTreeMap::new();
-    let mut jobs: Vec<(Reference<'_>, Arc<SecretClient>)> = Vec::with_capacity(refs.len());
+    // One client per vault and kind, shared by its references.
+    let mut clients: BTreeMap<(&str, Kind), Arc<Client>> = BTreeMap::new();
+    let mut jobs: Vec<(Reference<'_>, Arc<Client>)> = Vec::with_capacity(refs.len());
     for r in refs {
-        let client = if let Some(client) = clients.get(r.vault) {
+        let client = if let Some(client) = clients.get(&(r.vault, r.kind)) {
             client.clone()
         } else {
-            let options = SecretClientOptions {
-                client_options: ClientOptions {
-                    transport: access.http.clone().map(Transport::new),
-                    ..ClientOptions::default()
-                },
-                ..SecretClientOptions::default()
-            };
-            let client = SecretClient::new(&url.replace("{vault}", r.vault), credential.clone(), Some(options))
-                .map_err(|e| Error::Msg(format!("{}: {}", r.uri, describe(&e))))?;
-            clients.entry(r.vault).or_insert(Arc::new(client)).clone()
+            let made = client(
+                r.kind,
+                &url.replace("{vault}", r.vault),
+                credential.clone(),
+                access.http.as_ref(),
+            )
+            .map_err(|e| Error::Msg(format!("{}: {}", r.uri, describe(&e))))?;
+            clients.entry((r.vault, r.kind)).or_insert(Arc::new(made)).clone()
         };
         jobs.push((r, client));
     }
@@ -141,43 +246,62 @@ pub(super) fn key_vault(uris: &[&str], access: Access<'_>) -> Result<Vec<String>
         .enable_all()
         .build()
         .map_err(io_error(Path::new("async runtime")))
-        .and_then(|runtime| runtime.block_on(read_all(&jobs)))
+        .and_then(|runtime| {
+            runtime.block_on(futures::future::try_join_all(
+                jobs.iter().map(|(r, client)| read(r, client)),
+            ))
+        })
 }
 
-/// Read every reference: each vault's first one alone (it signs in), then all the others at once.
-async fn read_all(jobs: &[(Reference<'_>, Arc<SecretClient>)]) -> Result<Vec<String>> {
-    let mut values: Vec<Option<String>> = Vec::with_capacity(jobs.len());
-    let mut seen: Vec<&str> = Vec::new();
-    for (r, client) in jobs {
-        let first = !seen.contains(&r.vault);
-        seen.push(r.vault);
-        values.push(if first { Some(read(r, client).await?) } else { None });
+async fn read(r: &Reference<'_>, client: &Client) -> Result<String> {
+    let version = r.version.map(str::to_owned);
+    let value = match client {
+        Client::Secret(c) => {
+            let options = SecretClientGetSecretOptions {
+                secret_version: version,
+                ..Default::default()
+            };
+            c.get_secret(r.name, Some(options))
+                .await
+                .and_then(Response::into_model)
+                .map(|s| s.value)
+        }
+        Client::Key(c) => {
+            let options = KeyClientGetKeyOptions {
+                key_version: version,
+                ..Default::default()
+            };
+            let key = c.get_key(r.name, Some(options)).await.and_then(Response::into_model);
+            key.map(|k| k.key.and_then(|jwk| serde_json::to_string(&jwk).ok()))
+        }
+        Client::Certificate(c) => {
+            let options = CertificateClientGetCertificateOptions {
+                certificate_version: version,
+                ..Default::default()
+            };
+            let certificate = c
+                .get_certificate(r.name, Some(options))
+                .await
+                .and_then(Response::into_model);
+            certificate.map(|c| c.cer.as_deref().map(pem))
+        }
     }
-    let rest = jobs
-        .iter()
-        .zip(&values)
-        .filter(|(_, v)| v.is_none())
-        .map(|((r, client), _)| read(r, client));
-    let mut rest = futures::future::try_join_all(rest).await?.into_iter();
-    Ok(values
-        .into_iter()
-        .map(|v| v.or_else(|| rest.next()).unwrap_or_default())
-        .collect())
+    .map_err(|e| Error::Msg(format!("{}: {}", r.uri, describe(&e))))?;
+    value.ok_or_else(|| Error::Msg(format!("{}: Key Vault returned no value", r.uri)))
 }
 
-async fn read(r: &Reference<'_>, client: &SecretClient) -> Result<String> {
-    let options = SecretClientGetSecretOptions {
-        secret_version: r.version.map(str::to_owned),
-        ..Default::default()
-    };
-    let secret = client
-        .get_secret(r.name, Some(options))
-        .await
-        .and_then(azure_core::http::Response::into_model)
-        .map_err(|e| Error::Msg(format!("{}: {}", r.uri, describe(&e))))?;
-    secret
-        .value
-        .ok_or_else(|| Error::Msg(format!("{}: the secret has no value", r.uri)))
+/// A DER certificate as PEM.
+fn pem(der: &[u8]) -> String {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(der);
+    let lines: Vec<&str> = b64
+        .as_bytes()
+        .chunks(64)
+        .filter_map(|line| std::str::from_utf8(line).ok())
+        .collect();
+    format!(
+        "-----BEGIN CERTIFICATE-----\n{}\n-----END CERTIFICATE-----",
+        lines.join("\n")
+    )
 }
 
 #[cfg(test)]
@@ -187,17 +311,18 @@ pub(crate) mod tests {
 
     use azure_core::http::headers::{HeaderName, Headers};
     use azure_core::http::{AsyncRawResponse, HttpClient, Request, StatusCode};
+    use base64::Engine;
     use pretty_assertions::assert_eq;
 
-    use super::{Access, Reference, az_search_path, key_vault, parse};
+    use super::{Access, Kind, Reference, az_search_path, key_vault, parse, pem};
     use crate::testing::Project;
 
-    /// Key Vault, as far as tfp needs it: the first request of a client gets the auth challenge for the vault's
-    /// domain; authorised ones get the secret named in the URL (`secrets/<name>[/<version>]`), 404 when it is unknown,
-    /// and a secret named `novalue` has none.
+    /// Key Vault, as far as tfp needs it: a request without a token gets the auth challenge for the vault's domain;
+    /// one with a token gets the JSON body stored under its path (`secrets/<name>[/<version>]`, `keys/…`,
+    /// `certificates/…`), or 404.
     #[derive(Debug, Default)]
     pub(crate) struct FakeVault {
-        pub(crate) secrets: BTreeMap<String, String>,
+        pub(crate) bodies: BTreeMap<String, String>,
         pub(crate) requests: Mutex<Vec<String>>,
     }
 
@@ -210,11 +335,11 @@ pub(crate) mod tests {
                 .headers()
                 .get_optional_str(&HeaderName::from_static("authorization"))
                 .is_some();
-            let path = url.path().trim_end_matches('/');
+            let path = url.path().trim_matches('/');
             self.requests
                 .lock()
                 .unwrap()
-                .push(format!("{} {host}{path}", if authorised { "auth" } else { "anon" }));
+                .push(format!("{} {host}/{path}", if authorised { "auth" } else { "anon" }));
             let mut headers = Headers::new();
             if !authorised {
                 let domain = host.split_once('.').map_or(host.as_str(), |(_, d)| d);
@@ -223,22 +348,24 @@ pub(crate) mod tests {
                 headers.insert(HeaderName::from_static("www-authenticate"), challenge);
                 return Ok(AsyncRawResponse::from_bytes(StatusCode::Unauthorized, headers, ""));
             }
-            let path: Vec<&str> = path.trim_start_matches('/').split('/').collect();
-            let key = path.get(1..).unwrap_or_default().join("/");
             headers.insert(HeaderName::from_static("content-type"), "application/json");
-            Ok(match self.secrets.get(&key) {
-                _ if key == "novalue" => AsyncRawResponse::from_bytes(StatusCode::Ok, headers, "{}"),
-                Some(value) => {
-                    let body = serde_json::json!({"value": value, "id": format!("https://{host}/secrets/{key}")});
-                    AsyncRawResponse::from_bytes(StatusCode::Ok, headers, body.to_string())
-                }
+            Ok(match self.bodies.get(path) {
+                Some(body) => AsyncRawResponse::from_bytes(StatusCode::Ok, headers, body.clone()),
                 None => AsyncRawResponse::from_bytes(
                     StatusCode::NotFound,
                     headers,
-                    r#"{"error":{"code":"SecretNotFound","message":"no such secret"}}"#,
+                    r#"{"error":{"code":"NotFound","message":"no such object"}}"#,
                 ),
             })
         }
+    }
+
+    /// A vault serving `bodies`: `(path, JSON body)`.
+    pub(crate) fn vault(bodies: &[(&str, &str)]) -> Arc<FakeVault> {
+        Arc::new(FakeVault {
+            bodies: bodies.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+            ..FakeVault::default()
+        })
     }
 
     /// A project with a fake `az` in `bin/` that logs its arguments to `bin/az.log` and prints a token, or fails when
@@ -263,16 +390,6 @@ pub(crate) mod tests {
         .into()
     }
 
-    fn vault(secrets: &[(&str, &str)]) -> Arc<FakeVault> {
-        Arc::new(FakeVault {
-            secrets: secrets
-                .iter()
-                .map(|(k, v)| ((*k).to_owned(), (*v).to_owned()))
-                .collect(),
-            ..FakeVault::default()
-        })
-    }
-
     fn read(
         p: &Project,
         vault: &Arc<FakeVault>,
@@ -293,6 +410,10 @@ pub(crate) mod tests {
         key_vault(uris, access).map_err(|e| e.to_string())
     }
 
+    fn az_calls(p: &Project) -> String {
+        std::fs::read_to_string(p.path("bin/az.log")).unwrap_or_default()
+    }
+
     #[test]
     fn a_configured_az_path_goes_first_on_path() {
         assert_eq!(az_search_path("az", Some("/x".into())), Some("/x".into()));
@@ -306,76 +427,105 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn references_take_a_vault_a_name_and_maybe_a_version() {
+    fn references_name_a_vault_a_kind_a_name_and_maybe_a_version() {
         let r = |uri| parse(uri).unwrap();
         assert_eq!(
-            r("az-kv://kv/name"),
+            r("az-kv://kv/secrets/db"),
             Reference {
-                uri: "az-kv://kv/name",
+                uri: "az-kv://kv/secrets/db",
                 vault: "kv",
-                name: "name",
+                kind: Kind::Secret,
+                name: "db",
                 version: None
             }
         );
-        assert_eq!(r("az-kv://kv/name/").version, None);
-        assert_eq!(r("az-kv://kv/name/v1").version, Some("v1"));
-        for bad in ["az-kv://kv", "az-kv:///name", "az-kv://kv//v", "az-kv://kv/a/b/c"] {
-            assert!(parse(bad).unwrap_err().to_string().contains("is not az-kv://"), "{bad}");
+        assert_eq!(r("az-kv://kv/keys/sign/").kind, Kind::Key);
+        assert_eq!(r("az-kv://kv/certificates/tls/v1").version, Some("v1"));
+        for bad in [
+            "az-kv://kv/db",
+            "az-kv://kv/blobs/x",
+            "az-kv:///secrets/x",
+            "az-kv://kv/secrets/",
+            "az-kv://kv/secrets/a/b/c",
+        ] {
+            let err = parse(bad).unwrap_err().to_string();
+            assert!(
+                err.contains("is not az-kv://<vault>/<secrets|keys|certificates>"),
+                "{bad}"
+            );
         }
     }
 
     #[test]
-    fn reads_secrets_signing_in_once_per_vault() {
+    fn reads_all_three_kinds_signing_in_once() {
         let p = with_fake_az();
+        let der = [0x30_u8; 100];
+        let cer = base64::engine::general_purpose::STANDARD.encode(der);
         let v = vault(&[
-            ("db", "s3cret"),
-            ("api", "k\ney \"q\""),
-            ("db/v1", "old"),
-            ("other", "x"),
+            ("secrets/db", r#"{"value":"s3cret"}"#),
+            ("secrets/db/v1", r#"{"value":"old"}"#),
+            ("secrets/api", r#"{"value":"k\ney \"q\""}"#),
+            ("keys/sign", r#"{"key":{"kty":"RSA","n":"AQAB","e":"AQAB"}}"#),
+            ("certificates/tls", &format!(r#"{{"cer":"{cer}"}}"#)),
         ]);
         let uris = [
-            "az-kv://one/db",
-            "az-kv://one/api",
-            "az-kv://one/db/v1",
-            "az-kv://two/other",
+            "az-kv://one/secrets/db",
+            "az-kv://one/secrets/api",
+            "az-kv://one/secrets/db/v1",
+            "az-kv://one/keys/sign",
+            "az-kv://two/certificates/tls",
         ];
         let env = [
             ("ARM_TENANT_ID", "11111111-1111-1111-1111-111111111111"),
             ("ARM_SUBSCRIPTION_ID", "sub-a"),
         ];
-        assert_eq!(
-            read(&p, &v, &uris, &[], &env).unwrap(),
-            ["s3cret", "k\ney \"q\"", "old", "x"]
-        );
-        let az = std::fs::read_to_string(p.path("bin/az.log")).unwrap();
-        assert_eq!(az.lines().count(), 2, "{az}");
+        let values = read(&p, &v, &uris, &[], &env).unwrap();
+        assert_eq!(values[..3], ["s3cret", "k\ney \"q\"", "old"]);
+        assert_eq!(values[3], r#"{"e":"AQAB","kty":"RSA","n":"AQAB"}"#);
+        assert_eq!(values[4], pem(&der));
+        let az = az_calls(&p);
+        assert_eq!(az.lines().count(), 1, "{az}");
         assert!(
             az.contains("--tenant 11111111-1111-1111-1111-111111111111") && az.contains("--subscription sub-a"),
             "{az}"
         );
-        let requests = v.requests.lock().unwrap().clone();
         assert!(
-            requests.contains(&"anon one.vault.azure.net/secrets/db".to_owned()),
-            "{requests:?}"
+            v.requests
+                .lock()
+                .unwrap()
+                .contains(&"auth two.vault.azure.net/certificates/tls".to_owned())
         );
-        assert!(
-            requests.contains(&"auth two.vault.azure.net/secrets/other".to_owned()),
-            "{requests:?}"
+    }
+
+    #[test]
+    fn certificates_are_pem() {
+        let der: Vec<u8> = (0..=100).collect();
+        let text = pem(&der);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(
+            (lines[0], lines[lines.len() - 1]),
+            ("-----BEGIN CERTIFICATE-----", "-----END CERTIFICATE-----")
         );
+        assert_eq!(lines[1].len(), 64);
+        let body: String = lines[1..lines.len() - 1].concat();
+        assert_eq!(base64::engine::general_purpose::STANDARD.decode(body).unwrap(), der);
     }
 
     #[test]
     fn settings_override_the_banner_env_and_pick_the_cloud() {
         let p = with_fake_az();
-        let v = vault(&[("db", "s")]);
+        let v = vault(&[("secrets/db", r#"{"value":"s"}"#)]);
         let settings = [
             ("tenant", "22222222-2222-2222-2222-222222222222"),
             ("subscription", "sub-b"),
             ("vault_url", "https://{vault}.vault.azure.cn/"),
         ];
         let env = [("ARM_TENANT_ID", "11111111-1111-1111-1111-111111111111")];
-        assert_eq!(read(&p, &v, &["az-kv://cn/db"], &settings, &env).unwrap(), ["s"]);
-        let az = std::fs::read_to_string(p.path("bin/az.log")).unwrap();
+        assert_eq!(
+            read(&p, &v, &["az-kv://cn/secrets/db"], &settings, &env).unwrap(),
+            ["s"]
+        );
+        let az = az_calls(&p);
         assert!(az.contains("--tenant 22222222-2222-2222-2222-222222222222") && az.contains("--subscription sub-b"));
         assert!(
             v.requests
@@ -394,36 +544,43 @@ pub(crate) mod tests {
             search_path: Some(search_path(&p)),
             http: Some(http),
         };
-        assert_eq!(key_vault(&["az-kv://kv/db"], access).unwrap(), ["s"]);
-        assert!(
-            !std::fs::read_to_string(p.path("bin/az.log"))
-                .unwrap()
-                .contains("--tenant")
-        );
+        assert_eq!(key_vault(&["az-kv://kv/secrets/db"], access).unwrap(), ["s"]);
+        assert!(!az_calls(&p).contains("--tenant"));
     }
 
     #[test]
     fn failures_name_the_reference() {
         let p = with_fake_az();
-        let v = vault(&[("db", "s")]);
+        let v = vault(&[
+            ("secrets/db", r#"{"value":"s"}"#),
+            ("secrets/none", "{}"),
+            ("keys/none", "{}"),
+            ("certificates/none", "{}"),
+        ]);
         let err = |uris: &[&str], settings: &[(&str, &str)]| read(&p, &v, uris, settings, &[]).unwrap_err();
         assert_eq!(
-            err(&["az-kv://kv/db"], &[("region", "x")]),
+            err(&["az-kv://kv/secrets/db"], &[("region", "x")]),
             "unknown az-kv setting `region` (known: tenant, subscription, vault_url)"
         );
-        assert!(err(&["az-kv://kv"], &[]).contains("is not az-kv://"));
-        assert!(err(&["az-kv://kv/db"], &[("tenant", "not a tenant!")]).starts_with("Azure CLI sign-in settings: "));
-        assert!(err(&["az-kv://kv/db"], &[("vault_url", "not a url {vault}")]).starts_with("az-kv://kv/db: "));
-        assert!(err(&["az-kv://kv/missing"], &[]).starts_with("az-kv://kv/missing: "));
-        assert!(err(&["az-kv://kv/db", "az-kv://kv/missing"], &[]).starts_with("az-kv://kv/missing: "));
-        assert_eq!(
-            err(&["az-kv://kv/novalue"], &[]),
-            "az-kv://kv/novalue: the secret has no value"
-        );
+        assert!(err(&["az-kv://kv/db"], &[]).contains("is not az-kv://"));
+        let bad_tenant = err(&["az-kv://kv/secrets/db"], &[("tenant", "not a tenant!")]);
+        assert!(bad_tenant.starts_with("Azure CLI sign-in settings: "), "{bad_tenant}");
+        for kind in ["secrets", "keys", "certificates"] {
+            let uri = format!("az-kv://kv/{kind}/x");
+            assert!(
+                err(&[&uri], &[("vault_url", "not a url {vault}")]).starts_with(&format!("{uri}: ")),
+                "{kind}"
+            );
+            assert!(err(&[&uri], &[]).starts_with(&format!("{uri}: ")), "{kind}");
+            let none = format!("az-kv://kv/{kind}/none");
+            assert_eq!(err(&[&none], &[]), format!("{none}: Key Vault returned no value"));
+        }
+        let second = err(&["az-kv://kv/secrets/db", "az-kv://kv/secrets/missing"], &[]);
+        assert!(second.starts_with("az-kv://kv/secrets/missing: "), "{second}");
         p.write("bin/FAIL", "");
-        let signed_out = err(&["az-kv://kv/db"], &[]);
+        let signed_out = err(&["az-kv://kv/secrets/db"], &[]);
         assert!(
-            signed_out.starts_with("az-kv://kv/db: ") && signed_out.contains("az login"),
+            signed_out.starts_with("az-kv://kv/secrets/db: ") && signed_out.contains("az login"),
             "{signed_out}"
         );
     }

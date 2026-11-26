@@ -22,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tfp last` records the real exit code for every invocation. Ctrl-C still
   reaches Terraform, and tfp exits with Terraform's code.
 - The apply / state locks now work on Windows too.
+- **Standalone downloads.** Each GitHub Release also carries the programs
+  per platform (`tf-project-<version>-<target>.tar.gz`, `.zip` for Windows),
+  Sigstore-signed, for installing without Python.
 - Error messages are worded differently in places.
 - `tfp self snapshot list` also shows each snapshot's time.
 

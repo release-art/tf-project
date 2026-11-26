@@ -2,7 +2,8 @@
 #
 # Push a tag matching `v*.*.*` (e.g. `v2.0.0`, `v2.1.0rc1`) and this workflow:
 #   1. Re-runs CI against the tagged commit.
-#   2. Builds a wheel per platform and the sdist, with the version set from the tag.
+#   2. Builds a wheel per platform and the sdist, with the version set from the tag, and packs each wheel's
+#      programs as a standalone download (.tar.gz, .zip for Windows) for the GitHub Release.
 #   3. Signs them with Sigstore (transparency-logged, keyless).
 #   4. Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
 #   5. Creates a GitHub Release with the changelog notes and the signed artifacts.
@@ -57,6 +58,13 @@ jobs:
         with:
           name: wheel-${{ matrix.target }}
           path: dist/*.whl
+      - name: Pack the programs for download without pip
+        shell: bash
+        run: python bin/rust/archive.py dist/*.whl "${{ matrix.target }}" binaries
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: binaries/*
 
   sdist:
     needs: test
@@ -82,9 +90,20 @@ jobs:
       contents: write  # the GitHub Release
     steps:
       - uses: actions/checkout@v6
+      # dist/ is what PyPI gets; the standalone downloads stay apart in binaries/.
       - uses: actions/download-artifact@v4
         with:
+          pattern: wheel-*
           path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: binaries
           merge-multiple: true
       - uses: actions/setup-python@v6
         with:
@@ -96,12 +115,13 @@ jobs:
           inputs: |
             ./dist/*.whl
             ./dist/*.tar.gz
+            ./binaries/*
 
       - name: Stash Sigstore bundles outside dist/
         # `pypa/gh-action-pypi-publish` uploads everything in `dist/` and rejects `.sigstore.json`.
         run: |
           mkdir -p signatures
-          mv dist/*.sigstore.json signatures/
+          mv dist/*.sigstore.json binaries/*.sigstore.json signatures/
 
       - name: Publish to TestPyPI
         uses: pypa/gh-action-pypi-publish@release/v1
@@ -141,5 +161,6 @@ jobs:
           files: |
             dist/*.whl
             dist/*.tar.gz
+            binaries/*
             signatures/*.sigstore.json
           fail_on_unmatched_files: true

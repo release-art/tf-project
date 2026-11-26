@@ -39,6 +39,12 @@ single native program (written in Rust); the PyPI package only delivers it.
 Wheels are published for Linux (x86_64, arm64), macOS (arm64) and Windows
 (x86_64), and work with any Python 3.
 
+Without Python: each [GitHub Release][releases] also carries the two programs
+as `tf-project-<version>-<target>.tar.gz` (`.zip` for Windows), signed with
+Sigstore like the wheels. Unpack it and put `tfp` / `tf-project` on your `PATH`.
+
+[releases]: https://github.com/release-art/tf-project/releases
+
 ## Configure
 
 ```sh
@@ -337,7 +343,8 @@ writes the tag into it (`bin/rust/set-version.sh`) before building.
    - Signs both with [Sigstore][sigstore] (keyless, transparency-logged).
    - Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
    - Creates a GitHub Release with the extracted changelog section and the
-     signed artifacts (`.whl`, `.tar.gz`, `.sigstore`) attached.
+     signed artifacts attached: the wheels and sdist, plus each platform's
+     programs as a standalone `.tar.gz` / `.zip` (`bin/rust/archive.py`).
 
 Tags carrying `rc` / `a` / `b` / `dev` suffixes (e.g. `v1.0.0rc1`) are
 auto-marked as pre-releases on GitHub.

@@ -1,4 +1,5 @@
-# Every gate on each push / PR against main, and a wheel per platform that installs and runs.
+# Every gate on each push / PR against main, and a wheel per platform that installs and runs, as does the
+# standalone download made from it.
 
 name: CI
 
@@ -80,6 +81,13 @@ jobs:
           "$bin/pip" install dist/*.whl
           "$bin/tf-project" --version
           "$bin/tfp" --help
+      - name: Pack the standalone download, unpack it and run it
+        shell: bash
+        run: |
+          archive=$(python bin/rust/archive.py dist/*.whl "${{ matrix.target }}" binaries)
+          mkdir unpacked
+          if [[ "$archive" == *.zip ]]; then unzip -q "$archive" -d unpacked; else tar xzf "$archive" -C unpacked; fi
+          unpacked/*/tfp --version
 
   sdist:
     # The source distribution, and the PyPI metadata (README rendering) both kinds of artifact carry.

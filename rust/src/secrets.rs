@@ -1,8 +1,14 @@
 //! Secrets in tfvars: `{{ scheme://… }}` references, resolved by the source for their scheme and written into a
 //! private copy of the file that is shredded after use.
 //!
-//! Each scheme's references are fetched in one batch. The only source so far is `op://`: 1Password, through one
-//! `op inject` call. A new source is a new arm in `resolve`.
+//! Each scheme's references are fetched together by the scheme's source, configured by the banner's
+//! `secrets_config.<scheme>`:
+//! - `op://`: 1Password, through one `op inject` call.
+//! - `az-kv://`: Azure Key Vault, through the Azure SDK (see `key_vault`).
+//!
+//! A new source is a new arm in `resolve`.
+
+mod key_vault;
 
 use std::collections::BTreeMap;
 use std::ffi::OsString;
@@ -14,6 +20,7 @@ use std::process::Command;
 use sha2::{Digest, Sha256};
 
 use crate::config::{Config, DEFAULT_SECRETS_COMMAND};
+use crate::models::Banner;
 use crate::{Ctx, Error, Result, hex, io_error, say};
 
 /// A tfvars file ready to hand to Terraform. A decrypted copy is shredded when this is dropped.
@@ -136,6 +143,8 @@ pub fn materialize(config: &Config, ctx: &mut Ctx, src: &Path) -> Result<Decrypt
     if refs.is_empty() {
         return Ok(Decrypted::passthrough(src, text.into_bytes()));
     }
+    // A file without its banner (the slot's saved state stands in for it) has no source settings.
+    let banner = crate::banner::parse_banner(&text, src).ok();
     let dir = private_dir(&ctx.temp_dir)?;
     let mut by_scheme: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for r in &refs {
@@ -146,7 +155,7 @@ pub fn materialize(config: &Config, ctx: &mut Ctx, src: &Path) -> Result<Decrypt
     }
     let mut values: BTreeMap<&str, String> = BTreeMap::new();
     for (scheme, uris) in by_scheme {
-        let resolved = resolve(scheme, &uris, dir.path(), ctx.search_path.clone())
+        let resolved = resolve(scheme, &uris, dir.path(), ctx, banner.as_ref())
             .map_err(|e| Error::Msg(format!("{}: {e}", src.display())))?;
         values.extend(uris.into_iter().zip(resolved));
     }
@@ -171,11 +180,23 @@ pub fn materialize(config: &Config, ctx: &mut Ctx, src: &Path) -> Result<Decrypt
 }
 
 /// The secrets `uris` (all of `scheme`) name, in order, from the scheme's source.
-fn resolve(scheme: &str, uris: &[&str], dir: &Path, search_path: Option<OsString>) -> Result<Vec<String>> {
+fn resolve(scheme: &str, uris: &[&str], dir: &Path, ctx: &Ctx, banner: Option<&Banner>) -> Result<Vec<String>> {
+    let no_env = BTreeMap::new();
+    let settings = banner.and_then(|b| b.secrets_config.get(scheme));
     match scheme {
-        "op" => one_password(uris, dir, search_path),
+        "op" if settings.is_some_and(|s| !s.is_empty()) => Err(Error::Msg("op:// references take no settings".into())),
+        "op" => one_password(uris, dir, ctx.search_path.clone()),
+        "az-kv" => key_vault::key_vault(
+            uris,
+            key_vault::Access {
+                settings,
+                env: banner.map_or(&no_env, |b| &b.env),
+                search_path: ctx.search_path.clone(),
+                http: ctx.http.clone(),
+            },
+        ),
         other => Err(Error::Msg(format!(
-            "no secret source for `{other}://` references (known: op)"
+            "no secret source for `{other}://` references (known: op, az-kv)"
         ))),
     }
 }
@@ -361,6 +382,41 @@ mod tests {
     }
 
     #[test]
+    fn mixed_sources_in_one_file_with_banner_settings() {
+        let p = with_fake_op("");
+        let az = super::key_vault::tests::with_fake_az();
+        std::fs::copy(az.path("bin/az"), p.path("bin/az")).unwrap();
+        let vault = std::sync::Arc::new(super::key_vault::tests::FakeVault {
+            secrets: [("db".to_owned(), "kv-secret".to_owned())].into(),
+            ..Default::default()
+        });
+        let banner = r#"# {"header":"terraform","project":"demo","env":{"ARM_TENANT_ID":"11111111-1111-1111-1111-111111111111"},"secrets_config":{"az-kv":{"subscription":"sub-x"}}}"#;
+        let src = p.write(
+            "tfvars/dev.tfvars",
+            &format!("{banner}\na = \"{{{{ op://v/i/f }}}}\"\nb = \"{{{{ az-kv://kv/db }}}}\"\n"),
+        );
+        let mut s = Streams::default();
+        let mut ctx = s.ctx(&p.root);
+        ctx.search_path = Some(super::key_vault::tests::search_path(&p));
+        ctx.http = Some(vault.clone());
+        let d = materialize(&p.config(), &mut ctx, &src).unwrap();
+        let text = String::from_utf8(d.contents().to_vec()).unwrap();
+        assert!(text.ends_with("a = \"secret(v/i/f)\"\nb = \"kv-secret\"\n"), "{text}");
+        let az_calls = std::fs::read_to_string(p.path("bin/az.log")).unwrap();
+        assert!(
+            az_calls.contains("--tenant 11111111-1111-1111-1111-111111111111") && az_calls.contains("sub-x"),
+            "{az_calls}"
+        );
+        // Settings for `op` are refused: it takes none.
+        p.write("tfvars/dev.tfvars", "# {\"header\":\"terraform\",\"project\":\"demo\",\"secrets_config\":{\"op\":{\"account\":\"x\"}}}\na = \"{{ op://v/i/f }}\"\n");
+        let err = materialize(&p.config(), &mut ctx, &src).unwrap_err().to_string();
+        assert!(err.ends_with("op:// references take no settings"), "{err}");
+        // An empty settings table for `op` is fine.
+        p.write("tfvars/dev.tfvars", "# {\"header\":\"terraform\",\"project\":\"demo\",\"secrets_config\":{\"op\":{}}}\na = \"{{ op://v/i/f }}\"\n");
+        assert!(materialize(&p.config(), &mut ctx, &src).is_ok());
+    }
+
+    #[test]
     fn a_file_without_references_is_used_as_is() {
         let p = with_fake_op("");
         assert_eq!(decrypt(&p, "x = 1\n").0.unwrap(), "x = 1\n");
@@ -386,7 +442,9 @@ mod tests {
     fn failures() {
         let p = with_fake_op("");
         let err = |tfvars: &str| decrypt(&p, tfvars).0.unwrap_err();
-        assert!(err("a = \"{{ vault://k }}\"\n").ends_with("no secret source for `vault://` references (known: op)"));
+        assert!(
+            err("a = \"{{ vault://k }}\"\n").ends_with("no secret source for `vault://` references (known: op, az-kv)")
+        );
         assert!(err("a = \"{{ op://v/fail/x }}\"\n").ends_with("`op inject` failed (exit status: 1)"));
         assert!(err("a = \"{{ op://v/garble/x }}\"\n").ends_with("`op inject` returned something unexpected"));
         // `op` that writes no output at all.

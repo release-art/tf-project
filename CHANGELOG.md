@@ -16,6 +16,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - References are found anywhere in a tfvars file, including inside
   multi-line strings and heredocs, with or without spaces inside the braces.
   Other `{{ … }}` (Go templates and the like) is left as written.
+- **Azure Key Vault source.** `{{ az-kv://<vault>/<secret>[/<version>] }}`
+  references are read with Microsoft's Azure SDK for Rust, signing in through
+  the Azure CLI once per vault and reading each vault's secrets concurrently.
+- **`secrets_config` in the banner** configures each source, keyed by scheme.
+  `az-kv` takes `tenant`, `subscription` (defaulting to the banner's
+  `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID`) and `vault_url` (for sovereign
+  clouds). `op` takes none.
+- Release builds are stripped and link-time optimised, which keeps the
+  programs at about 5.5 MB with the Azure SDK included.
 - A reference with an unknown scheme is an error naming the file and the
   scheme, instead of reaching Terraform unresolved.
 - A tfvars file without references is used as it is: no copy, and no `op`

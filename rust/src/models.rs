@@ -237,6 +237,9 @@ pub struct Banner {
     /// `-backend-config` key/values.
     #[serde(default)]
     pub backend_config: BTreeMap<String, String>,
+    /// Settings for each secret source, by URI scheme: `{"az-kv": {"tenant": "…"}}`.
+    #[serde(default)]
+    pub secrets_config: BTreeMap<String, BTreeMap<String, String>>,
     /// Fields the banner has that tf-project does not know.
     #[serde(flatten)]
     pub extra: BTreeMap<String, Value>,

@@ -20,7 +20,14 @@ use crate::{Error, Result, io_error};
 /// # Errors
 /// The file cannot be read, has no banner, or its banner is malformed.
 pub fn find_banner(tfvars: &Path) -> Result<Banner> {
-    let text = std::fs::read_to_string(tfvars).map_err(io_error(tfvars))?;
+    parse_banner(&std::fs::read_to_string(tfvars).map_err(io_error(tfvars))?, tfvars)
+}
+
+/// The banner in `text`, read from `tfvars`.
+///
+/// # Errors
+/// There is no banner, or it is malformed.
+pub fn parse_banner(text: &str, tfvars: &Path) -> Result<Banner> {
     for line in text.lines().filter(|l| l.starts_with('#')) {
         let Ok(data) = serde_json::from_str::<Value>(line.trim_start_matches('#').trim()) else {
             continue;

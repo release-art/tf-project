@@ -85,6 +85,8 @@ pub struct Ctx<'a> {
     pub search_path: Option<std::ffi::OsString>,
     /// Where decrypted tfvars are written, in a private directory.
     pub temp_dir: PathBuf,
+    /// The HTTP client for cloud SDKs (Azure Key Vault); the SDK's own when none.
+    pub http: Option<std::sync::Arc<dyn azure_core::http::HttpClient>>,
 }
 
 impl Ctx<'_> {
@@ -214,6 +216,7 @@ pub(crate) mod testing {
                 terraform: terraform::Options::default(),
                 search_path: None,
                 temp_dir: std::env::temp_dir(),
+                http: None,
             }
         }
 

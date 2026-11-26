@@ -240,11 +240,15 @@ fn secret_checks(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Vec
                 false,
                 "not found on PATH; install it: https://developer.1password.com/docs/cli/get-started/",
             ),
-            (other, _) => check(
-                format!("{other}:// references"),
-                false,
-                "no secret source for this scheme",
-            ),
+                        ("az-kv", _) => match found("az") {
+                Some(path) => check("az-kv:// references: Azure CLI `az`", true, path),
+                None => check(
+                    "az-kv:// references: Azure CLI `az`",
+                    false,
+                    "not found on PATH; install it and `az login`: https://learn.microsoft.com/cli/azure/install-azure-cli",
+                ),
+            },
+            (other, _) => check(format!("{other}:// references"), false, "no secret source for this scheme"),
         })
         .collect()
 }

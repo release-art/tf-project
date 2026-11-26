@@ -344,6 +344,7 @@ pub fn main() -> ExitCode {
         terraform: crate::terraform::Options::default(),
         search_path: None,
         temp_dir: std::env::temp_dir(),
+        http: None,
     };
     ExitCode::from(u8::try_from(run(args, &mut ctx).rem_euclid(256)).unwrap_or(1))
 }
@@ -1350,6 +1351,20 @@ secret_sources:
         );
         let op = p.write("bin/op", "#!/bin/sh\n");
         chmod(&op, 0o755);
+        p.write(
+            "tfvars/qa.tfvars",
+            "# {\"header\":\"terraform\",\"project\":\"demo\"}\nk = \"{{ az-kv://kv/s }}\"\n",
+        );
+        let az_check = |p: &Project| {
+            let checks = crate::self_commands::do_self_doctor(&p.config(), Some(bin.as_os_str()));
+            checks
+                .into_iter()
+                .find(|c| c.name.starts_with("az-kv://"))
+                .map(|c| c.ok)
+        };
+        assert_eq!(az_check(&p), Some(false));
+        chmod(&p.write("bin/az", "#!/bin/sh\n"), 0o755);
+        assert_eq!(az_check(&p), Some(true));
         let checks = crate::self_commands::do_self_doctor(&p.config(), Some(bin.as_os_str()));
         assert!(
             checks

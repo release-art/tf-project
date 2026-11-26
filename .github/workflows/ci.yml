@@ -121,3 +121,56 @@ jobs:
 
       - name: Pytest
         run: pdm run pytest
+
+  rust:
+    # Every gate for the Rust port in rust/: format, clippy, docs, licences, tests, 100% coverage.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install # the version pinned in rust/rust-toolchain.toml
+        working-directory: rust
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest,cargo-llvm-cov,cargo-deny
+      - run: bin/rust/check.sh
+        env:
+          NEXTEST_PROFILE: ci
+
+  wheels:
+    # The Rust program packaged as a py3-none wheel per platform, installed into a clean venv and run.
+    # Built from rust/ alone: the root pyproject.toml still ships the Python package until the cutover.
+    needs: rust
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: echo "RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust/rust-toolchain.toml)" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: PyO3/maturin-action@v1
+        with:
+          working-directory: rust
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: ${{ matrix.target }}
+          args: --release --bindings bin --out dist
+          manylinux: auto
+      - name: Install on a clean interpreter and run both names
+        shell: bash
+        run: |
+          python -m venv clean
+          bin=clean/bin; [ -d clean/Scripts ] && bin=clean/Scripts
+          "$bin/pip" install rust/dist/*.whl
+          "$bin/tf-project" --version
+          "$bin/tfp" --help

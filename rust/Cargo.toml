@@ -1,0 +1,43 @@
+[package]
+name = "tf-project"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.100"
+license = "MIT"
+description = "Terraform / OpenTofu wrapper with named per-tfvars slots, cached `.terraform/`, 1Password secret injection, and apply-safety guards."
+repository = "https://github.com/release-art/tf-project"
+publish = false
+
+# Two names for one program, as the Python package's [project.scripts] had: tf-project (src/main.rs) and tfp.
+[[bin]]
+name = "tfp"
+path = "src/bin/tfp.rs"
+
+[dependencies]
+clap = { version = "4.6.10", features = ["derive"] }
+
+[dev-dependencies]
+pretty_assertions = "1.4.1"
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "deny"
+unreachable_pub = "deny"
+unused_qualifications = "deny"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "deny", priority = -1 }
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+indexing_slicing = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+dbg_macro = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+[lints.rustdoc]
+broken_intra_doc_links = "deny"

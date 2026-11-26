@@ -709,7 +709,7 @@ fn self_command(config: &Config, ctx: &mut Ctx, command: SelfWithConfig) -> Resu
             }
         }
         SelfWithConfig::Doctor => {
-            let checks = sc::do_self_doctor(config);
+            let checks = sc::do_self_doctor(config, ctx.search_path.as_deref());
             let width = checks.iter().map(|c| c.name.chars().count()).max().unwrap_or(0);
             for c in &checks {
                 say!(
@@ -1018,7 +1018,12 @@ mod tests {
         let (code, out, _) = tfp(&p, &["self", "config", "print"]);
         assert_eq!(code, 0);
         assert!(
-            out.contains("\nsecrets:\n  command = []\n") && out.contains("snapshot_retention = 200"),
+            out.contains(
+                "
+secret_sources:
+  op = 1Password CLI (op inject)
+"
+            ) && out.contains("snapshot_retention = 200"),
             "{out}"
         );
         let (_, out, _) = tfp(&p, &["self", "config", "print", "--json"]);
@@ -1223,10 +1228,7 @@ mod tests {
             &["destroy"],
             &["import", "a", "b"],
         ] {
-            assert!(
-                fails(&p, args).starts_with("secrets command `false` failed"),
-                "{args:?}"
-            );
+            assert!(fails(&p, args).contains("secrets command `false` failed"), "{args:?}");
         }
     }
 
@@ -1305,10 +1307,58 @@ mod tests {
         chmod(&tf, 0o644);
         assert_eq!(tfp(&p, &["plan"]).0, 0);
         std::fs::write(c.tfplan_file("dev"), "").unwrap();
-        // The tfvars file is gone: the slot falls back to its saved state, whose tfvars cannot be hashed.
+        chmod(&tf, 0o000);
+        assert!(fails(&p, &["apply"]).contains("main.tf"));
+        chmod(&tf, 0o644);
+        // The tfvars file is gone: the slot falls back to its saved state, whose tfvars cannot be read.
         std::fs::remove_file(p.path("tfvars/dev.tfvars")).unwrap();
         assert!(fails(&p, &["apply"]).contains("dev.tfvars"));
         assert!(fails(&p, &["plan"]).contains("dev.tfvars"));
+    }
+
+    #[test]
+    fn doctor_checks_each_secret_scheme_in_use() {
+        let p = Project::new("");
+        let doctor = |p: &Project, path: &std::path::Path| {
+            let checks = crate::self_commands::do_self_doctor(&p.config(), Some(path.as_os_str()));
+            checks
+                .into_iter()
+                .filter(|c| c.name.contains("secret"))
+                .map(|c| (c.name, c.ok))
+                .collect::<Vec<_>>()
+        };
+        let bin = p.path("bin");
+        std::fs::create_dir_all(&bin).unwrap();
+        assert_eq!(doctor(&p, &bin), [("secret references".to_owned(), true)]);
+        p.tfvars("dev", r#"{"header":"terraform","project":"demo"}"#);
+        p.write(
+            "tfvars/dev.tfvars",
+            "# {\"header\":\"terraform\",\"project\":\"demo\"}\na = \"{{ op://v/i/f }}\"\nb = \"{{ vault://k }}\"\n",
+        );
+        let checks = crate::self_commands::do_self_doctor(&p.config(), Some(bin.as_os_str()));
+        let secret: Vec<(&str, bool)> = checks
+            .iter()
+            .filter(|c| c.name.contains("://"))
+            .map(|c| (c.name.as_str(), c.ok))
+            .collect();
+        assert_eq!(
+            secret,
+            [
+                ("op:// references: 1Password CLI `op`", false),
+                ("vault:// references", false)
+            ]
+        );
+        let op = p.write("bin/op", "#!/bin/sh\n");
+        chmod(&op, 0o755);
+        let checks = crate::self_commands::do_self_doctor(&p.config(), Some(bin.as_os_str()));
+        assert!(
+            checks
+                .iter()
+                .any(|c| c.name.starts_with("op://") && c.ok && c.detail == op.display().to_string())
+        );
+        let legacy = Project::new("[tf_project.secrets]\ncommand = []");
+        let checks = crate::self_commands::do_self_doctor(&legacy.config(), Some(bin.as_os_str()));
+        assert!(checks.iter().any(|c| c.name == "secrets command (deprecated)" && c.ok));
     }
 
     #[test]
@@ -1374,8 +1424,8 @@ mod tests {
                 "{text:?}"
             );
             assert_eq!(
-                crate::config::Config::discover(dir.path()).unwrap().secrets_command[0],
-                "op"
+                crate::config::Config::discover(dir.path()).unwrap().secrets_command,
+                None
             );
             assert!(
                 tfp_in(dir.path(), &["self", "init"], "")
@@ -1436,7 +1486,7 @@ mod tests {
         assert_eq!(code, 1);
         for line in [
             "[FAIL] terraform binary",
-            "[FAIL] secrets command `no-such-op` on PATH",
+            "[FAIL] secrets command `no-such-op` (deprecated) on PATH",
             "[FAIL] terraform_dir exists",
             "[FAIL] slot uniqueness",
             "found orphan slot directories with no matching banner: x, y",
@@ -1450,7 +1500,8 @@ mod tests {
         .unwrap();
         let out = tfp(&p, &["self", "doctor"]).1;
         assert!(
-            out.contains("[OK  ] terraform binary `sh`") && out.contains("[OK  ] secrets command `sh` on PATH"),
+            out.contains("[OK  ] terraform binary `sh`")
+                && out.contains("[OK  ] secrets command `sh` (deprecated) on PATH"),
             "{out}"
         );
         assert!(fails(&p, &["self", "banner", "check", "tfvars/none.tfvars"]).contains("none.tfvars"));
@@ -1524,11 +1575,19 @@ mod tests {
                 .starts_with("No snapshot named \"zzz\" for slot \"dev\". Available:\n  ")
         );
         // Retention 1 prunes everything but the newest.
-        std::fs::write(p.path("tf_project.toml"), "[tf_project]\nterraform_binary = \"bin/terraform\"\nsnapshot_retention = 1\n[tf_project.secrets]\ncommand = []\n").unwrap();
+        std::fs::write(
+            p.path("tf_project.toml"),
+            "[tf_project]\nterraform_binary = \"bin/terraform\"\nsnapshot_retention = 1\n",
+        )
+        .unwrap();
         assert_eq!(tfp(&p, &["self", "snapshot", "create"]).0, 0);
         assert_eq!(tfp(&p, &["self", "snapshot", "list"]).1.lines().count(), 1);
         // Retention 0 takes no automatic snapshots.
-        std::fs::write(p.path("tf_project.toml"), "[tf_project]\nterraform_binary = \"bin/terraform\"\nsnapshot_retention = 0\n[tf_project.secrets]\ncommand = []\n").unwrap();
+        std::fs::write(
+            p.path("tf_project.toml"),
+            "[tf_project]\nterraform_binary = \"bin/terraform\"\nsnapshot_retention = 0\n",
+        )
+        .unwrap();
         assert_eq!(tfp(&p, &["state", "rm", "a"]).0, 0);
         assert_eq!(tfp(&p, &["self", "snapshot", "list"]).1.lines().count(), 1);
     }

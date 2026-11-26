@@ -12,7 +12,8 @@ use crate::commands::{
     build_providers_lock_argv, build_targeted_argv, require_active, require_slot_state,
 };
 use crate::config::{
-    CONFIG_FILE_NAME, CONFIG_TABLE, Config, PYPROJECT_FILE_NAME, PYPROJECT_TABLE, locate, parse_toml, walk,
+    CONFIG_FILE_NAME, CONFIG_TABLE, Config, DEFAULT_SECRETS_COMMAND, PYPROJECT_FILE_NAME, PYPROJECT_TABLE, locate,
+    parse_toml, walk,
 };
 use crate::lock::{LockProvider, LockStatus, select_provider};
 use crate::models::{LastInvocation, MyState, Versioned};
@@ -21,7 +22,7 @@ use crate::terraform::{self, env_for_slot};
 use crate::text::utc;
 use crate::{Ctx, Error, Result, io_error, resolve, say, slots};
 
-/// The `[tf_project]` body `tfp self init` writes, under `{table}`.
+/// The body of the `[tf_project]` table `tfp self init` writes.
 const DEFAULT_CONFIG_BODY: &str = r#"terraform_dir = "terraform"
 tfvars_dir    = "tfvars"
 tmp_dir       = "tmp"
@@ -37,14 +38,10 @@ state_key_prefix = ""
 # Each `tfp state rm`/`mv`/`replace-provider`/`import` pulls remote state and
 # writes a snapshot here before mutating. Set to 0 to disable.
 # snapshot_retention = 200
-
-[{table}.secrets]
-# Pluggable tfvars preprocessor. Set `command = []` to disable.
-command = ["op", "inject", "--in-file", "{in}", "--out-file", "{out}"]
 "#;
 
 fn render_default_config(table: &str) -> String {
-    format!("[{table}]\n{}", DEFAULT_CONFIG_BODY.replace("{table}", table))
+    format!("[{table}]\n{DEFAULT_CONFIG_BODY}")
 }
 
 /// `tfp self init`: write a starter config, into `pyproject.toml` when there is one.
@@ -99,7 +96,8 @@ pub fn config_json(config: &Config) -> Value {
         "state_key_prefix": config.state_key_prefix,
         "terraform_binary": config.terraform_binary,
         "backend_config": config.backend_config,
-        "secrets": {"command": config.secrets_command},
+        "secret_sources": {"op": "1Password CLI (op inject)"},
+        "secrets_command (deprecated)": config.secrets_command,
         "extra_lock_platforms": config.extra_lock_platforms,
         "snapshot_retention": config.snapshot_retention,
     })
@@ -202,11 +200,66 @@ fn check(name: impl Into<String>, ok: bool, detail: impl Into<String>) -> Doctor
     }
 }
 
-/// `tfp self doctor`: is everything tf-project needs in place?
+/// Can the secret references in the tfvars be resolved? One check per scheme in use, or one for the deprecated
+/// `secrets.command`.
+fn secret_checks(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Vec<DoctorCheck> {
+    if let Some(command) = config
+        .secrets_command
+        .as_ref()
+        .filter(|c| !c.iter().eq(DEFAULT_SECRETS_COMMAND.iter()))
+    {
+        let Some(program) = command.first() else {
+            return vec![check("secrets command (deprecated)", true, "disabled (command = [])")];
+        };
+        let name = format!("secrets command `{program}` (deprecated) on PATH");
+        return vec![match found(program) {
+            Some(path) => check(name, true, path),
+            None => check(
+                name,
+                false,
+                format!("not found; install `{program}` or remove [tf_project.secrets]"),
+            ),
+        }];
+    }
+    let mut schemes: Vec<String> = slots::list_slots(config)
+        .iter()
+        .filter_map(|s| std::fs::read_to_string(&s.tfvars).ok())
+        .flat_map(|text| crate::secrets::schemes(&text))
+        .collect();
+    schemes.sort();
+    schemes.dedup();
+    if schemes.is_empty() {
+        return vec![check("secret references", true, "none in the tfvars")];
+    }
+    schemes
+        .into_iter()
+        .map(|scheme| match (scheme.as_str(), found("op")) {
+            ("op", Some(path)) => check("op:// references: 1Password CLI `op`", true, path),
+            ("op", None) => check(
+                "op:// references: 1Password CLI `op`",
+                false,
+                "not found on PATH; install it: https://developer.1password.com/docs/cli/get-started/",
+            ),
+            (other, _) => check(
+                format!("{other}:// references"),
+                false,
+                "no secret source for this scheme",
+            ),
+        })
+        .collect()
+}
+
+/// `tfp self doctor`: is everything tf-project needs in place? Programs are looked up on `path` (tfp's own `PATH`
+/// when none).
 #[must_use]
-pub fn do_self_doctor(config: &Config) -> Vec<DoctorCheck> {
+pub fn do_self_doctor(config: &Config, path: Option<&std::ffi::OsStr>) -> Vec<DoctorCheck> {
     let binary = &config.terraform_binary;
-    let found = |program: &str| which::which(program).ok().map(|p| p.display().to_string());
+    let path = path.map(ToOwned::to_owned).or_else(|| std::env::var_os("PATH"));
+    let found = |program: &str| {
+        which::which_in(program, path.clone(), &config.project_root)
+            .ok()
+            .map(|p| p.display().to_string())
+    };
     let mut checks = vec![match found(binary) {
         Some(path) => check(format!("terraform binary `{binary}`"), true, path),
         None => check(
@@ -215,20 +268,7 @@ pub fn do_self_doctor(config: &Config) -> Vec<DoctorCheck> {
             "not found; install it or set `terraform_binary`",
         ),
     }];
-    checks.push(match config.secrets_command.first() {
-        None => check("secrets command", true, "disabled (command = [])"),
-        Some(program) => {
-            let name = format!("secrets command `{program}` on PATH");
-            match found(program) {
-                Some(path) => check(name, true, path),
-                None => check(
-                    name,
-                    false,
-                    format!("not found; install `{program}` or disable in [tf_project.secrets]"),
-                ),
-            }
-        }
-    });
+    checks.extend(secret_checks(config, &found));
     for (name, dir, may_be_missing) in [
         ("terraform_dir", &config.terraform_dir, false),
         ("tfvars_dir", &config.tfvars_dir, false),

@@ -15,7 +15,8 @@ pub const CONFIG_TABLE: &str = "tf_project";
 pub const PYPROJECT_FILE_NAME: &str = "pyproject.toml";
 /// Its table.
 pub const PYPROJECT_TABLE: [&str; 2] = ["tool", "tf_project"];
-/// The default secrets command: 1Password's `op inject`.
+/// The `[tf_project.secrets] command` that `tfp self init` used to write: 1Password's `op inject`. Configs still
+/// carrying it get the built-in resolution, with a deprecation warning.
 pub const DEFAULT_SECRETS_COMMAND: [&str; 6] = ["op", "inject", "--in-file", "{in}", "--out-file", "{out}"];
 
 /// The configuration, resolved.
@@ -35,8 +36,9 @@ pub struct Config {
     pub terraform_binary: String,
     /// `-backend-config` key/values for every slot.
     pub backend_config: BTreeMap<String, String>,
-    /// The tfvars preprocessor; empty disables it.
-    pub secrets_command: Vec<String>,
+    /// The deprecated whole-file tfvars preprocessor, if the config still sets one; `{{ scheme://… }}` references
+    /// are resolved by [`crate::secrets`] otherwise.
+    pub secrets_command: Option<Vec<String>>,
     /// `TF_PLUGIN_CACHE_DIR`; none when disabled with `plugin_cache_dir = ""`.
     pub plugin_cache_dir: Option<PathBuf>,
     /// `GOOS_GOARCH` platforms locked on top of the defaults.
@@ -69,19 +71,10 @@ struct Table {
     snapshot_retention: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Secrets {
-    #[serde(default = "default_secrets_command")]
-    command: Vec<String>,
-}
-
-impl Default for Secrets {
-    fn default() -> Self {
-        Self {
-            command: default_secrets_command(),
-        }
-    }
+    command: Option<Vec<String>>,
 }
 
 fn default_terraform_dir() -> PathBuf {
@@ -98,10 +91,6 @@ fn default_tmp_dir() -> PathBuf {
 
 fn default_retention() -> u32 {
     200
-}
-
-fn default_secrets_command() -> Vec<String> {
-    DEFAULT_SECRETS_COMMAND.map(str::to_owned).to_vec()
 }
 
 /// `terraform` as found on `path`, or the bare name for the run to fail on.
@@ -359,7 +348,7 @@ mod tests {
         assert_eq!(c.tmp_dir, p.path("tmp"));
         assert_eq!(c.plugin_cache_dir, Some(p.path("tmp/plugin-cache")));
         assert_eq!(c.snapshot_retention, 200);
-        assert_eq!(c.secrets_command, Vec::<String>::new());
+        assert_eq!(c.secrets_command, None);
         assert_eq!(c.terraform_binary, p.path("bin/terraform").display().to_string());
         assert_eq!(c.slot_dir("dev"), p.path("tmp/slots/dev"));
         for (path, rel) in [
@@ -391,13 +380,13 @@ mod tests {
             c.terraform_binary,
             c.project_root.join("bin/tofu").display().to_string()
         );
-        assert_eq!(c.secrets_command[0], "op");
+        assert_eq!(c.secrets_command, None);
         assert_eq!(c.snapshot_retention, 0);
         assert_eq!(c.backend_config["a"], "b");
         assert_eq!(c.state_key_prefix, "p/");
         let disabled = load("[tf_project]\nplugin_cache_dir = \"\"\n[tf_project.secrets]\n").unwrap();
         assert_eq!(disabled.plugin_cache_dir, None);
-        assert_eq!(disabled.secrets_command[0], "op");
+        assert_eq!(disabled.secrets_command, None);
     }
 
     #[test]

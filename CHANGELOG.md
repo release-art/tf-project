@@ -4,6 +4,32 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+- **tfp resolves secret references itself.** `{{ scheme://… }}` references
+  in tfvars are collected, grouped by scheme and fetched from each scheme's
+  source in one batch. `op://` goes to 1Password through a single
+  `op inject` call over just the references, so values with newlines or
+  quotes come back intact. This is the base for adding other secret sources
+  per scheme.
+- References are found anywhere in a tfvars file, including inside
+  multi-line strings and heredocs, with or without spaces inside the braces.
+  Other `{{ … }}` (Go templates and the like) is left as written.
+- A reference with an unknown scheme is an error naming the file and the
+  scheme, instead of reaching Terraform unresolved.
+- A tfvars file without references is used as it is: no copy, and no `op`
+  call.
+- `tfp self doctor` reports each secret scheme in use and whether its source
+  is available.
+- `tfp self init` no longer writes a `[tf_project.secrets]` section.
+
+### Deprecated
+- `[tf_project.secrets] command`. Configs still carrying the old default
+  (`op inject --in-file {in} --out-file {out}`) get the built-in resolution
+  and a warning to delete the setting. Any other command still runs as
+  before, with a warning; it will be removed in a later release.
+
 ## [0.3.0] - 2026-11-26
 
 ### Changed

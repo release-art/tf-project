@@ -23,10 +23,11 @@ time you switch, this tool replaces that ritual with `tfp use dev`.
 - **Versioned, strictly validated state files.** Every persisted JSON carries
   `schema_version`; unknown fields fail loudly (except in user-authored
   banners, where they are tolerated and reported by `tfp self banner check`).
-- Pluggable tfvars preprocessing - defaults to [1Password's `op inject`][op]
-  so you can keep `op://...` references in tfvars committed to git.
+- **Secrets stay out of git.** Tfvars hold references like
+  `{{ op://vault/item/field }}`; tfp fills them in from [1Password][op] at
+  run time, into a private copy that is shredded afterwards.
 
-[op]: https://developer.1password.com/docs/cli/secrets-template-syntax/
+[op]: https://developer.1password.com/docs/cli/
 
 ## Install
 
@@ -77,10 +78,6 @@ state_key_prefix = "terraform/azure/"     # remote backend key prefix
 # resource_group_name  = "tfstate-rg"
 # storage_account_name = "tfstate0001"
 # container_name       = "tfstate"
-
-# Optional. Defaults to `op inject`. Set `command = []` to disable.
-[tf_project.secrets]
-command = ["op", "inject", "--in-file", "{in}", "--out-file", "{out}"]
 ```
 
 Unknown fields in `tf_project.toml` are rejected at load time.
@@ -115,6 +112,42 @@ Banner fields:
 
 Unknown banner fields are tolerated (forward-compatible across tfp versions);
 `tfp self banner check` names them, so a typo doesn't disappear silently.
+
+### Secrets in tfvars
+
+Write a secret as a reference in double braces, wherever its value goes: a
+whole value, or part of a longer string, including multi-line strings and
+heredocs. Spaces inside the braces are optional.
+
+```hcl
+# {"header": "terraform", "project": "demo"}
+db_password = "{{ op://Infra/postgres-prod/password }}"
+
+app_config = <<EOT
+listen: 8080
+api_key: {{op://Infra/api/credential}}
+greeting: {{ .Values.greeting }}
+EOT
+```
+
+Only `{{ scheme://… }}` is treated as a reference; other `{{ … }}` (such as
+the Go-template line above) is left as written.
+
+Before running Terraform, tfp collects the file's references, groups them by
+scheme, and fetches each group from its source in one go. It writes the
+filled-in file to a private temporary directory, passes that to Terraform as
+`-var-file`, and overwrites it with zeros and deletes it afterwards. A tfvars
+file without references is used as it is.
+
+| Scheme   | Source                                                                                     |
+| -------- | ------------------------------------------------------------------------------------------ |
+| `op://`  | 1Password, through one `op inject` call. Needs the [1Password CLI][op], signed in through the desktop app or with `OP_SERVICE_ACCOUNT_TOKEN`. |
+
+A reference with any other scheme stops the command with an error naming the
+file and the scheme. `tfp self doctor` lists the schemes your tfvars use and
+whether each one's source is available. Values are inserted exactly as
+returned, so a value containing `"` or `\` needs escaping in the secret store
+for HCL.
 
 ## Usage
 

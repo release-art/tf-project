@@ -1,12 +1,5 @@
-//! The `tfp` program. See the library for everything it does.
+//! The `tfp` program: `tf-project` under a shorter name.
 
-use std::process::ExitCode;
-
-fn main() -> ExitCode {
-    tf_project::run(
-        std::env::args_os().collect(),
-        &mut std::io::stdout(),
-        &mut std::io::stderr(),
-    )
-    .unwrap_or(ExitCode::FAILURE)
+fn main() -> std::process::ExitCode {
+    tf_project::cli::main()
 }

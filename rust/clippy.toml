@@ -6,4 +6,4 @@ allow-indexing-slicing-in-tests = true
 allow-print-in-tests = true
 
 # Product names clippy would otherwise want in backticks; clap shows doc comments as --help text.
-doc-valid-idents = ["OpenTofu", ".."]
+doc-valid-idents = ["OpenTofu", "DynamoDB", ".."]

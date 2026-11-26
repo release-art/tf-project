@@ -6,32 +6,25 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::de::DeserializeOwned;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use serde_json::Value;
 
-/// A string that must not be empty.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(try_from = "String")]
-pub struct NonEmpty(String);
-
-impl TryFrom<String> for NonEmpty {
-    type Error = &'static str;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.is_empty() {
-            Err("String should have at least 1 character")
-        } else {
-            Ok(Self(value))
-        }
+fn check_non_empty<E: serde::de::Error>(s: String) -> Result<String, E> {
+    if s.is_empty() {
+        Err(E::custom("String should have at least 1 character"))
+    } else {
+        Ok(s)
     }
 }
 
-impl std::ops::Deref for NonEmpty {
-    type Target = str;
+/// A string that must not be empty.
+fn non_empty<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    check_non_empty(String::deserialize(d)?)
+}
 
-    fn deref(&self) -> &str {
-        &self.0
-    }
+/// An optional string that, when given, must not be empty.
+fn non_empty_opt<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Option::<String>::deserialize(d)?.map(check_non_empty).transpose()
 }
 
 /// A versioned file could not be read or written.
@@ -75,6 +68,14 @@ impl std::fmt::Display for SchemaError {
 
 impl std::error::Error for SchemaError {}
 
+/// A model with its `schema_version` first, as stored.
+#[derive(Serialize)]
+struct Envelope<'a, T> {
+    schema_version: i64,
+    #[serde(flatten)]
+    body: &'a T,
+}
+
 /// A model stored as a JSON object carrying an explicit `schema_version`.
 ///
 /// The version lives in the file, not the struct: `load_file` checks and strips it, `dump_file` writes it first.
@@ -105,18 +106,21 @@ pub trait Versioned: Serialize + DeserializeOwned {
         serde_json::from_value(Value::Object(fields)).map_err(|e| SchemaError::Invalid(path.into(), e))
     }
 
+    /// The model as stored, `schema_version` included; null if it cannot be represented (a non-Unicode path).
+    fn to_json(&self) -> Value {
+        serde_json::to_value(Envelope {
+            schema_version: Self::SUPPORTED_VERSION,
+            body: self,
+        })
+        .unwrap_or_default()
+    }
+
     /// Write the model to `path` as JSON indented by four spaces, atomically: a reader sees the old file or the new
     /// one, never half of one. The parent directory is created if missing.
     ///
     /// # Errors
     /// The directory or the file cannot be written.
     fn dump_file(&self, path: &Path) -> Result<(), SchemaError> {
-        #[derive(Serialize)]
-        struct Envelope<'a, T> {
-            schema_version: i64,
-            #[serde(flatten)]
-            body: &'a T,
-        }
         let mut buf = Vec::new();
         let mut ser =
             serde_json::Serializer::with_formatter(&mut buf, serde_json::ser::PrettyFormatter::with_indent(b"    "));
@@ -142,9 +146,11 @@ pub trait Versioned: Serialize + DeserializeOwned {
 #[serde(deny_unknown_fields)]
 pub struct MyState {
     /// The slot's name.
-    pub slot: NonEmpty,
+    #[serde(deserialize_with = "non_empty")]
+    pub slot: String,
     /// The project, a directory under `terraform_dir`.
-    pub project: NonEmpty,
+    #[serde(deserialize_with = "non_empty")]
+    pub project: String,
     /// The slot's tfvars file.
     pub tfvars: PathBuf,
     /// The project's Terraform sources.
@@ -217,13 +223,14 @@ pub struct Banner {
     /// Always `"terraform"`.
     pub header: Header,
     /// The project, a directory under `terraform_dir`.
-    pub project: NonEmpty,
+    #[serde(deserialize_with = "non_empty")]
+    pub project: String,
     /// The slot name; the tfvars file's stem when absent.
-    #[serde(default)]
-    pub slot: Option<NonEmpty>,
+    #[serde(default, deserialize_with = "non_empty_opt")]
+    pub slot: Option<String>,
     /// The backend `key`, an absolute POSIX path.
     #[serde(default)]
-    pub state_key: Option<NonEmpty>,
+    pub state_key: Option<String>,
     /// Extra environment for Terraform.
     #[serde(default)]
     pub env: BTreeMap<String, String>,
@@ -262,7 +269,7 @@ mod tests {
     #[test]
     fn python_files_round_trip_byte_for_byte() {
         let state: MyState = round_trip("my_state.json");
-        assert_eq!(&*state.slot, "dev");
+        assert_eq!(state.slot, "dev");
         assert_eq!(round_trip::<TfplanMeta>("tfplan_meta.json").state_key, None);
         assert_eq!(round_trip::<LastInvocation>("last_invocation.json").exit_code, None);
     }
@@ -358,7 +365,7 @@ mod tests {
     #[test]
     fn banner_keeps_unknown_fields() {
         let b = banner(&json!({"header": "terraform", "project": "api", "owner": "me"})).unwrap();
-        assert_eq!(&*b.project, "api");
+        assert_eq!(b.project, "api");
         assert_eq!(b.slot, None);
         assert_eq!(b.extra.keys().collect::<Vec<_>>(), ["owner"]);
     }
@@ -367,7 +374,10 @@ mod tests {
     fn banner_rejects() {
         assert!(banner(&json!({"header": "tofu", "project": "api"})).is_err());
         assert!(banner(&json!({"header": "terraform"})).is_err());
-        assert!(banner(&json!({"header": "terraform", "project": "api", "state_key": ""})).is_err());
+        assert!(banner(&json!({"header": "terraform", "project": "api", "slot": ""})).is_err());
+        assert!(banner(&json!({"header": "terraform", "project": "api", "slot": null})).is_ok());
+        assert!(banner(&json!({"header": "terraform", "project": 1})).is_err());
+        assert!(banner(&json!({"header": "terraform", "project": "api", "slot": 1})).is_err());
         assert!(banner(&json!({"header": "terraform", "project": "api", "env": {"A": 1}})).is_err());
     }
 }

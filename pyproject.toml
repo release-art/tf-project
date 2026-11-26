@@ -18,11 +18,9 @@ keywords = [
     "1password",
     "op-cli",
     "secrets",
-    "sops",
     "azurerm",
     "s3-backend",
     "terraform-state",
-    "sigstore",
 ]
 
 authors = [

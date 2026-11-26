@@ -35,13 +35,13 @@ pip install tf-project      # or: uv tool install tf-project / pipx install tf-p
 ```
 
 The CLI is exposed as both `tf-project` and the shorter alias `tfp`. It is a
-single native program (written in Rust); the PyPI package only delivers it.
-Wheels are published for Linux (x86_64, arm64), macOS (arm64) and Windows
-(x86_64), and work with any Python 3.
+single native program; the PyPI wheels (Linux x86_64 / arm64, macOS arm64,
+Windows x86_64) contain nothing else.
 
-Without Python: each [GitHub Release][releases] also carries the two programs
-as `tf-project-<version>-<target>.tar.gz` (`.zip` for Windows), signed with
-Sigstore like the wheels. Unpack it and put `tfp` / `tf-project` on your `PATH`.
+To install without Python, download
+`tf-project-<version>-<target>.tar.gz` (`.zip` for Windows) from a
+[GitHub Release][releases] and put `tfp` / `tf-project` on your `PATH`. Every
+release file is signed with [Sigstore][sigstore].
 
 [releases]: https://github.com/release-art/tf-project/releases
 
@@ -120,7 +120,7 @@ Unknown banner fields are tolerated (forward-compatible across tfp versions);
 
 ```sh
 tfp use dev                     # switch to slot "dev" (no init if already warm)
-tfp use tfvars/prod.tfvars      # path also accepted (useful with shell completion)
+tfp use tfvars/prod.tfvars      # a tfvars path works too
 tfp init                        # re-bind the active slot's backend from its banner
                                 # (run after editing a banner's state_key/backend_config)
 tfp ls                          # list slots; active marked with `*`
@@ -144,7 +144,7 @@ tfp state replace-provider hashicorp/aws registry.acme.local/aws
 tfp state identities            # 1.10+
 tfp import aws_s3_bucket.foo my-bucket
                                 # forwards the decrypted tfvars + saved env
-tfp status                      # one-line summary of the active slot
+tfp status                      # summary of the active slot
 tfp last                        # last terraform invocation for the active slot
 ```
 
@@ -167,8 +167,11 @@ tfp use prod                    # writes tmp/active (affects all shells without 
 ### Global flags
 
 - `--verbose` - echo the terraform argv to stderr before running it.
-- `--dry-run` - print the argv and skip execution.
+- `--dry-run` - print the argv and run nothing.
 - `-s/--slot <name>` - operate against a specific slot for one invocation.
+
+`--verbose` and `--dry-run` are accepted anywhere before a `--`; `-s` goes
+before the subcommand.
 
 ```sh
 tfp --dry-run plan -t module.foo
@@ -277,8 +280,8 @@ tfp tf providers schema -json
 tfp tf version                        # works without an active slot
 ```
 
-Unknown subcommands are not forwarded: `tfp validate` is an error, so a typo
-never reaches Terraform by accident.
+Only the subcommands listed in this README are wrapped; every other
+Terraform command goes through `tfp tf`.
 
 Wrapped subcommands accept Terraform's own flags anywhere after the
 subcommand, appended to the underlying invocation; `--` works too:
@@ -303,7 +306,7 @@ tfp self banner check <tfvars>      # validate a banner; print resolved slot + f
 tfp self snapshot create            # `terraform state pull` to <tmp_dir>/snapshots/<slot>/<ts>-manual.tfstate
 tfp self snapshot list              # list snapshots for the active slot, newest first
 tfp self snapshot restore [<name>]  # `terraform state push -force` the named snapshot (default: newest)
-tfp self trace <subcommand>         # print the argv tfp would build; no exec
+tfp self trace <subcommand>         # print the argv tfp would build; runs nothing
 tfp self lock status                # remote-state lock state (azurerm or s3+dynamodb)
 tfp self lock break                 # polite-by-default release; --blunt skips terraform
 tfp self providers lock             # cross-platform `terraform providers lock`
@@ -340,7 +343,7 @@ writes the tag into it (`bin/rust/set-version.sh`) before building.
    - Re-runs CI against the tagged commit.
    - Builds a wheel per platform (Linux x86_64 + arm64, macOS arm64,
      Windows x86_64) and the sdist, with the version set from the tag.
-   - Signs both with [Sigstore][sigstore] (keyless, transparency-logged).
+   - Signs everything with [Sigstore][sigstore] (keyless, transparency-logged).
    - Publishes to PyPI via OIDC trusted publishing.
    - Creates a GitHub Release with the extracted changelog section and the
      signed artifacts attached: the wheels and sdist, plus each platform's

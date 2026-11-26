@@ -162,11 +162,18 @@ jobs:
             signatures/*.sigstore.json
           fail_on_unmatched_files: true
 
-  homebrew:
-    # Point release-art/homebrew-tap's formula at this release, committed by the Release.art workflow bot (a GitHub
-    # App installed on the tap with Contents: read and write). Stable releases only.
+  package-managers:
+    # Point the Homebrew tap and the Scoop bucket at this release, committed by the Release.art workflow bot (a
+    # GitHub App installed on both with Contents: read and write). Stable releases only.
     needs: publish
     if: needs.publish.outputs.prerelease == 'false'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { repo: homebrew-tap, file: Formula/tf-project.rb, generator: bin/homebrew-formula.py }
+          - { repo: scoop-bucket, file: bucket/tf-project.json, generator: bin/scoop-manifest.py }
+    name: ${{ matrix.repo }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -178,28 +185,32 @@ jobs:
           app-id: ${{ vars.RELEASE_ART_WORKFLOW_APP_ID }}
           private-key: ${{ secrets.RELEASE_ART_WORKFLOW_APP_PK }}
           owner: release-art
-          repositories: homebrew-tap
+          repositories: ${{ matrix.repo }}
           permission-contents: write
       - uses: actions/checkout@v6
         with:
-          repository: release-art/homebrew-tap
+          repository: release-art/${{ matrix.repo }}
           token: ${{ steps.bot.outputs.token }}
-          path: homebrew-tap
-      - name: Write the formula from this release's archives
+          path: package-repo
+      - name: Write the package definition from this release's archives
         env:
           GH_TOKEN: ${{ github.token }}
-        run: python bin/homebrew-formula.py "$GITHUB_REF_NAME" > homebrew-tap/Formula/tf-project.rb
+        run: |
+          mkdir -p "$(dirname "package-repo/${{ matrix.file }}")"
+          python ${{ matrix.generator }} "$GITHUB_REF_NAME" > "package-repo/${{ matrix.file }}"
       - name: Commit and push as the workflow bot
-        working-directory: homebrew-tap
+        working-directory: package-repo
         env:
           GH_TOKEN: ${{ steps.bot.outputs.token }}
           BOT: ${{ steps.bot.outputs.app-slug }}[bot]
+          FILE: ${{ matrix.file }}
         run: |
-          if git diff --quiet; then
-            echo "Formula already points at ${GITHUB_REF_NAME}."
+          git add "$FILE"
+          if git diff --cached --quiet; then
+            echo "$FILE already points at ${GITHUB_REF_NAME}."
             exit 0
           fi
           git config user.name "$BOT"
           git config user.email "$(gh api "/users/$BOT" --jq .id)+$BOT@users.noreply.github.com"
-          git commit -m "tf-project ${GITHUB_REF_NAME#v}" Formula/tf-project.rb
+          git commit -m "tf-project ${GITHUB_REF_NAME#v}"
           git push

@@ -60,8 +60,10 @@ The **Release** workflow then:
 - publishes the wheels and source distribution to PyPI;
 - creates a GitHub release with the changelog section and all the files;
 - for a stable release, points the Homebrew formula in
-  [release-art/homebrew-tap](https://github.com/release-art/homebrew-tap) at
-  the new archives (`bin/homebrew-formula.py`), committed by the Release.art
+  [release-art/homebrew-tap](https://github.com/release-art/homebrew-tap)
+  (`bin/homebrew-formula.py`) and the Scoop manifest in
+  [release-art/scoop-bucket](https://github.com/release-art/scoop-bucket)
+  (`bin/scoop-manifest.py`) at the new archives, committed by the Release.art
   workflow bot.
 
 A tag like `v1.2.0rc1` (also `a1`, `b1`) makes a pre-release on GitHub and
@@ -71,7 +73,8 @@ One-time setup the workflow relies on:
 
 - **PyPI:** trusted publishing, set up on PyPI for this repository's
   `release.yml` and its `release` GitHub environment.
-- **Homebrew:** the *Release.art workflow bot* GitHub App, installed on
-  `release-art/homebrew-tap` with *Contents: read and write*. The workflow
-  signs in with the organisation variable `RELEASE_ART_WORKFLOW_APP_ID` and
-  secret `RELEASE_ART_WORKFLOW_APP_PK`.
+- **Homebrew and Scoop:** the *Release.art workflow bot* GitHub App,
+  installed on `release-art/homebrew-tap` and `release-art/scoop-bucket` with
+  *Contents: read and write*. The workflow signs in with the organisation
+  variable `RELEASE_ART_WORKFLOW_APP_ID` and secret
+  `RELEASE_ART_WORKFLOW_APP_PK`.

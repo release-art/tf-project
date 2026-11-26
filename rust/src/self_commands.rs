@@ -12,10 +12,9 @@ use crate::commands::{
     build_providers_lock_argv, build_targeted_argv, require_active, require_slot_state,
 };
 use crate::config::{
-    CONFIG_FILE_NAME, CONFIG_TABLE, Config, DEFAULT_SECRETS_COMMAND, PYPROJECT_FILE_NAME, PYPROJECT_TABLE, locate,
-    parse_toml, walk,
+    CONFIG_FILE_NAME, CONFIG_TABLE, Config, PYPROJECT_FILE_NAME, PYPROJECT_TABLE, locate, parse_toml, walk,
 };
-use crate::lock::{LockProvider, LockStatus, select_provider};
+use crate::lock::{Backend, LockProvider, LockStatus, select_provider};
 use crate::models::{LastInvocation, MyState, Versioned};
 use crate::state::load_state;
 use crate::terraform::{self, env_for_slot};
@@ -38,6 +37,12 @@ state_key_prefix = ""
 # Each `tfp state rm`/`mv`/`replace-provider`/`import` pulls remote state and
 # writes a snapshot here before mutating. Set to 0 to disable.
 # snapshot_retention = 200
+
+# Where to find the other tools tfp runs, when they aren't on PATH.
+# [tf_project.programs]
+# op  = "/opt/1password/op"       # 1Password CLI, for {{ op://… }} secrets
+# az  = "/opt/az/bin/az"          # Azure CLI, for {{ az-kv://… }} secrets and azurerm locks
+# aws = "/usr/local/bin/aws"      # AWS CLI, for S3 locks
 "#;
 
 fn render_default_config(table: &str) -> String {
@@ -97,7 +102,7 @@ pub fn config_json(config: &Config) -> Value {
         "terraform_binary": config.terraform_binary,
         "backend_config": config.backend_config,
         "secret_sources": {"op": "1Password CLI (op inject)"},
-        "secrets_command (deprecated)": config.secrets_command,
+        "programs": {"op": config.programs.op, "az": config.programs.az, "aws": config.programs.aws},
         "extra_lock_platforms": config.extra_lock_platforms,
         "snapshot_retention": config.snapshot_retention,
     })
@@ -200,27 +205,8 @@ fn check(name: impl Into<String>, ok: bool, detail: impl Into<String>) -> Doctor
     }
 }
 
-/// Can the secret references in the tfvars be resolved? One check per scheme in use, or one for the deprecated
-/// `secrets.command`.
+/// Can the secret references in the tfvars be resolved? One check per scheme in use.
 fn secret_checks(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Vec<DoctorCheck> {
-    if let Some(command) = config
-        .secrets_command
-        .as_ref()
-        .filter(|c| !c.iter().eq(DEFAULT_SECRETS_COMMAND.iter()))
-    {
-        let Some(program) = command.first() else {
-            return vec![check("secrets command (deprecated)", true, "disabled (command = [])")];
-        };
-        let name = format!("secrets command `{program}` (deprecated) on PATH");
-        return vec![match found(program) {
-            Some(path) => check(name, true, path),
-            None => check(
-                name,
-                false,
-                format!("not found; install `{program}` or remove [tf_project.secrets]"),
-            ),
-        }];
-    }
     let mut schemes: Vec<String> = slots::list_slots(config)
         .iter()
         .filter_map(|s| std::fs::read_to_string(&s.tfvars).ok())
@@ -233,22 +219,37 @@ fn secret_checks(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Vec
     }
     schemes
         .into_iter()
-        .map(|scheme| match (scheme.as_str(), found("op")) {
-            ("op", Some(path)) => check("op:// references: 1Password CLI `op`", true, path),
-            ("op", None) => check(
-                "op:// references: 1Password CLI `op`",
-                false,
-                "not found on PATH; install it: https://developer.1password.com/docs/cli/get-started/",
-            ),
-                        ("az-kv", _) => match found("az") {
-                Some(path) => check("az-kv:// references: Azure CLI `az`", true, path),
-                None => check(
-                    "az-kv:// references: Azure CLI `az`",
-                    false,
-                    "not found on PATH; install it and `az login`: https://learn.microsoft.com/cli/azure/install-azure-cli",
+        .map(|scheme| {
+            let tool = |key: &str, what: &str, program: &str, install: &str| {
+                let name = format!("{scheme}:// references: {what} `{program}`");
+                match found(program) {
+                    Some(path) => check(name, true, path),
+                    None => check(
+                        name,
+                        false,
+                        format!("not found; install it ({install}) or set [tf_project.programs] {key}"),
+                    ),
+                }
+            };
+            match scheme.as_str() {
+                "op" => tool(
+                    "op",
+                    "1Password CLI",
+                    &config.programs.op,
+                    "https://developer.1password.com/docs/cli/get-started/",
                 ),
-            },
-            (other, _) => check(format!("{other}:// references"), false, "no secret source for this scheme"),
+                "az-kv" => tool(
+                    "az",
+                    "Azure CLI",
+                    &config.programs.az,
+                    "https://learn.microsoft.com/cli/azure/install-azure-cli",
+                ),
+                other => check(
+                    format!("{other}:// references"),
+                    false,
+                    "no secret source for this scheme",
+                ),
+            }
         })
         .collect()
 }
@@ -565,9 +566,13 @@ pub fn do_self_providers_lock(config: &Config, ctx: &mut Ctx, platforms: &[Strin
     terraform::run(ctx, &cmd, &env_for_slot(config, &state))
 }
 
-/// The slot's lock provider, its CLI looked up on the context's `PATH`.
-fn provider(state: &MyState, ctx: &Ctx) -> Result<LockProvider> {
+/// The slot's lock provider, its CLI taken from `[tf_project.programs]` and looked up on the context's `PATH`.
+fn provider(config: &Config, state: &MyState, ctx: &Ctx) -> Result<LockProvider> {
     let mut provider = select_provider(state)?;
+    provider.program = match provider.backend {
+        Backend::Azure => config.programs.az.clone(),
+        Backend::S3 => config.programs.aws.clone(),
+    };
     provider.search_path.clone_from(&ctx.search_path);
     Ok(provider)
 }
@@ -578,7 +583,7 @@ fn provider(state: &MyState, ctx: &Ctx) -> Result<LockProvider> {
 /// No usable active slot, an unsupported backend, or the cloud CLI fails.
 pub fn do_self_lock_status(config: &Config, ctx: &Ctx) -> Result<LockStatus> {
     let state = require_slot_state(config, &require_active(config, ctx)?.name)?;
-    provider(&state, ctx)?.status()
+    provider(config, &state, ctx)?.status()
 }
 
 /// How `tfp self lock break` released the lock.
@@ -597,7 +602,7 @@ pub enum BreakResult {
 /// No usable active slot, an unsupported backend, no lock to break (politely), or the backend break fails.
 pub fn do_self_lock_break(config: &Config, ctx: &mut Ctx, blunt: bool) -> Result<BreakResult> {
     let state = require_slot_state(config, &require_active(config, ctx)?.name)?;
-    let provider = provider(&state, ctx)?;
+    let provider = provider(config, &state, ctx)?;
     // If the status itself fails (say, a CLI auth blip), the user still asked for the lock to go: break it.
     if !blunt && let Ok(status) = provider.status() {
         let Some(id) = status.info.id else {

@@ -28,6 +28,8 @@ pub(super) struct Access<'a> {
     pub(super) settings: Option<&'a BTreeMap<String, String>>,
     /// The banner's environment, for the tenant and subscription defaults.
     pub(super) env: &'a BTreeMap<String, String>,
+    /// The Azure CLI (`[tf_project.programs] az`): a name on `PATH`, or a path.
+    pub(super) az: &'a str,
     /// `PATH` for the Azure CLI; tfp's own when none.
     pub(super) search_path: Option<OsString>,
     /// The HTTP client; the SDK's own when none.
@@ -71,6 +73,15 @@ fn describe(e: &azure_core::Error) -> String {
     chain.map(ToString::to_string).collect::<Vec<_>>().join(": ")
 }
 
+/// The SDK runs plain `az` through a shell, so a configured `az` path gets its directory put first on the `PATH`.
+fn az_search_path(az: &str, search_path: Option<OsString>) -> Option<OsString> {
+    let Some(dir) = Path::new(az).parent().filter(|d| !d.as_os_str().is_empty()) else {
+        return search_path;
+    };
+    let rest = search_path.or_else(|| std::env::var_os("PATH")).unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(std::env::split_paths(&rest))).ok()
+}
+
 /// Runs the Azure CLI for the credential, on the `PATH` tfp was given.
 #[derive(Debug)]
 struct OnPath(Option<OsString>);
@@ -100,7 +111,7 @@ pub(super) fn key_vault(uris: &[&str], access: Access<'_>) -> Result<Vec<String>
     let credential = AzureCliCredential::new(Some(AzureCliCredentialOptions {
         tenant_id: setting("tenant", "ARM_TENANT_ID"),
         subscription: setting("subscription", "ARM_SUBSCRIPTION_ID"),
-        executor: Some(Arc::new(OnPath(access.search_path))),
+        executor: Some(Arc::new(OnPath(az_search_path(access.az, access.search_path)))),
     }))
     .map_err(|e| Error::Msg(format!("Azure CLI sign-in settings: {}", describe(&e))))?;
     let url = settings
@@ -178,7 +189,7 @@ pub(crate) mod tests {
     use azure_core::http::{AsyncRawResponse, HttpClient, Request, StatusCode};
     use pretty_assertions::assert_eq;
 
-    use super::{Access, Reference, key_vault, parse};
+    use super::{Access, Reference, az_search_path, key_vault, parse};
     use crate::testing::Project;
 
     /// Key Vault, as far as tfp needs it: the first request of a client gets the auth challenge for the vault's
@@ -273,12 +284,25 @@ pub(crate) mod tests {
         let (settings, env): (BTreeMap<String, String>, BTreeMap<String, String>) = (map(settings), map(env));
         let http: Arc<dyn HttpClient> = vault.clone();
         let access = Access {
+            az: "az",
             settings: Some(&settings),
             env: &env,
             search_path: Some(search_path(p)),
             http: Some(http),
         };
         key_vault(uris, access).map_err(|e| e.to_string())
+    }
+
+    #[test]
+    fn a_configured_az_path_goes_first_on_path() {
+        assert_eq!(az_search_path("az", Some("/x".into())), Some("/x".into()));
+        assert_eq!(az_search_path("az", None), None);
+        assert_eq!(
+            az_search_path("/opt/az/bin/az", Some("/a:/b".into())),
+            Some("/opt/az/bin:/a:/b".into())
+        );
+        let inherited = az_search_path("/opt/az/bin/az", None).unwrap();
+        assert!(inherited.to_string_lossy().starts_with("/opt/az/bin:"), "{inherited:?}");
     }
 
     #[test]
@@ -364,6 +388,7 @@ pub(crate) mod tests {
         let http: Arc<dyn HttpClient> = v.clone();
         let empty = BTreeMap::new();
         let access = Access {
+            az: "az",
             settings: None,
             env: &empty,
             search_path: Some(search_path(&p)),

@@ -19,7 +19,7 @@ use std::process::Command;
 
 use sha2::{Digest, Sha256};
 
-use crate::config::{Config, DEFAULT_SECRETS_COMMAND};
+use crate::config::Config;
 use crate::models::Banner;
 use crate::{Ctx, Error, Result, hex, io_error, say};
 
@@ -105,7 +105,8 @@ fn references(text: &str) -> Vec<Reference<'_>> {
         let scheme = uri.split_once("://").map_or("", |(s, _)| s);
         let valid_scheme = scheme.starts_with(|c: char| c.is_ascii_alphabetic())
             && scheme.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c));
-        if valid_scheme && !uri.contains(char::is_whitespace) {
+        // Names may contain spaces (`op://Infra/Fuji non-prod/Client Id`); a reference never spans lines.
+        if valid_scheme && !uri.contains(['\n', '\r', '{']) {
             found.push(Reference {
                 span: open..close + 2,
                 uri,
@@ -123,20 +124,12 @@ fn references(text: &str) -> Vec<Reference<'_>> {
 /// # Errors
 /// `src` cannot be read, a reference's scheme has no source, or a source fails.
 pub fn materialize(config: &Config, ctx: &mut Ctx, src: &Path) -> Result<Decrypted> {
-    if let Some(command) = &config.secrets_command {
-        let default = command.iter().eq(DEFAULT_SECRETS_COMMAND.iter());
+    if config.legacy_secrets_command {
         say!(
             ctx.err,
-            "warning: [tf_project.secrets] command is deprecated: tfp resolves {{{{ scheme://… }}}} references itself. {}",
-            if default {
-                "Delete the setting."
-            } else {
-                "Yours still runs for now; it will be removed."
-            }
+            "warning: [tf_project.secrets] command is no longer used: tfp resolves {{{{ scheme://… }}}} references \
+             itself. Delete it; if `op` isn't on PATH, set [tf_project.programs] op = \"<path>\" instead."
         );
-        if !default {
-            return run_command(command, src, &ctx.temp_dir);
-        }
     }
     let text = std::fs::read_to_string(src).map_err(io_error(src))?;
     let refs = references(&text);
@@ -155,7 +148,7 @@ pub fn materialize(config: &Config, ctx: &mut Ctx, src: &Path) -> Result<Decrypt
     }
     let mut values: BTreeMap<&str, String> = BTreeMap::new();
     for (scheme, uris) in by_scheme {
-        let resolved = resolve(scheme, &uris, dir.path(), ctx, banner.as_ref())
+        let resolved = resolve(scheme, &uris, dir.path(), config, ctx, banner.as_ref())
             .map_err(|e| Error::Msg(format!("{}: {e}", src.display())))?;
         values.extend(uris.into_iter().zip(resolved));
     }
@@ -180,17 +173,25 @@ pub fn materialize(config: &Config, ctx: &mut Ctx, src: &Path) -> Result<Decrypt
 }
 
 /// The secrets `uris` (all of `scheme`) name, in order, from the scheme's source.
-fn resolve(scheme: &str, uris: &[&str], dir: &Path, ctx: &Ctx, banner: Option<&Banner>) -> Result<Vec<String>> {
+fn resolve(
+    scheme: &str,
+    uris: &[&str],
+    dir: &Path,
+    config: &Config,
+    ctx: &Ctx,
+    banner: Option<&Banner>,
+) -> Result<Vec<String>> {
     let no_env = BTreeMap::new();
     let settings = banner.and_then(|b| b.secrets_config.get(scheme));
     match scheme {
         "op" if settings.is_some_and(|s| !s.is_empty()) => Err(Error::Msg("op:// references take no settings".into())),
-        "op" => one_password(uris, dir, ctx.search_path.clone()),
+        "op" => one_password(uris, dir, &config.programs.op, ctx.search_path.clone()),
         "az-kv" => key_vault::key_vault(
             uris,
             key_vault::Access {
                 settings,
                 env: banner.map_or(&no_env, |b| &b.env),
+                az: &config.programs.az,
                 search_path: ctx.search_path.clone(),
                 http: ctx.http.clone(),
             },
@@ -203,7 +204,7 @@ fn resolve(scheme: &str, uris: &[&str], dir: &Path, ctx: &Ctx, banner: Option<&B
 
 /// 1Password: one `op inject` over a template holding just the references, each between markers that carry a
 /// random nonce, so values with newlines or quotes come back intact.
-fn one_password(uris: &[&str], dir: &Path, search_path: Option<OsString>) -> Result<Vec<String>> {
+fn one_password(uris: &[&str], dir: &Path, op: &str, search_path: Option<OsString>) -> Result<Vec<String>> {
     let digest = hex(&Sha256::digest(format!(
         "{}{:?}",
         dir.display(),
@@ -218,7 +219,7 @@ fn one_password(uris: &[&str], dir: &Path, search_path: Option<OsString>) -> Res
     });
     let (input, output) = (dir.join("op.template"), dir.join("op.out"));
 
-    let mut command = Command::new("op");
+    let mut command = Command::new(op);
     command
         .arg("inject")
         .arg("--in-file")
@@ -228,7 +229,8 @@ fn one_password(uris: &[&str], dir: &Path, search_path: Option<OsString>) -> Res
     command.envs(search_path.map(|path| ("PATH", path)));
     let status = std::fs::write(&input, template).and_then(|()| command.status()).map_err(|e| {
         Error::Msg(format!(
-            "the 1Password CLI `op` could not run ({e}). Install it: https://developer.1password.com/docs/cli/get-started/"
+            "the 1Password CLI `{op}` could not run ({e}). Install it (https://developer.1password.com/docs/cli/get-started/) \
+             or set its path as [tf_project.programs] op"
         ))
     })?;
     if !status.success() {
@@ -247,39 +249,6 @@ fn one_password(uris: &[&str], dir: &Path, search_path: Option<OsString>) -> Res
                 .ok_or_else(|| Error::Msg("`op inject` returned something unexpected".into()))
         })
         .collect()
-}
-
-/// The deprecated `[tf_project.secrets] command`: run it with `{in}` and `{out}` filled in; an empty one passes the
-/// file through.
-fn run_command(command: &[String], src: &Path, temp_dir: &Path) -> Result<Decrypted> {
-    let [program, args @ ..] = command else {
-        return Ok(Decrypted::passthrough(src, std::fs::read(src).map_err(io_error(src))?));
-    };
-    if !src.is_file() {
-        return Err(Error::Msg(format!("tfvars file not found: {}", src.display())));
-    }
-    let dir = private_dir(temp_dir)?;
-    let out = dir
-        .path()
-        .join(format!("{}.decrypted.tfvars", crate::banner::stem(src)));
-    let fill = |a: &String| {
-        a.replace("{in}", &src.display().to_string())
-            .replace("{out}", &out.display().to_string())
-    };
-    let failed = |why: String| Err(Error::Msg(format!("secrets command `{program}` {why}")));
-    match Command::new(program).args(args.iter().map(fill)).status() {
-        Ok(status) if status.success() => {
-            let contents = std::fs::read(&out)
-                .map_err(|e| Error::Msg(format!("secrets command `{program}` wrote no output: {e}")))?;
-            Ok(Decrypted {
-                path: out,
-                contents,
-                dir: Some(dir),
-            })
-        }
-        Ok(status) => failed(format!("failed ({status})")),
-        Err(e) => failed(format!("could not run: {e}")),
-    }
 }
 
 /// The schemes of the `{{ scheme://… }}` references in `text`, for `tfp self doctor`.
@@ -327,7 +296,7 @@ mod tests {
             "bin/op",
             "#!/bin/sh\necho \"$@\" >> \"$0.log\"\ngrep -q fail \"$3\" && exit 1\n\
              grep -q garble \"$3\" && { echo junk > \"$5\"; exit 0; }\n\
-             perl -pe 's/\\{\\{ op:\\/\\/v\\/multi\\/x \\}\\}/line1\\nline2 \"q\"/g; s/\\{\\{ op:\\/\\/([^ }]+) \\}\\}/secret($1)/g' \"$3\" > \"$5\"\n",
+             perl -pe 's/\\{\\{ op:\\/\\/v\\/multi\\/x \\}\\}/line1\\nline2 \"q\"/g; s/\\{\\{ op:\\/\\/(.+?) \\}\\}/secret($1)/g' \"$3\" > \"$5\"\n",
         );
         std::fs::set_permissions(&op, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
         p
@@ -366,6 +335,31 @@ mod tests {
         let calls = std::fs::read_to_string(p.path("bin/op.log")).unwrap();
         assert_eq!(calls.lines().count(), 1);
         assert!(calls.starts_with("inject --in-file "), "{calls}");
+    }
+
+    #[test]
+    fn names_with_spaces_are_references() {
+        let p = with_fake_op("");
+        let tfvars = "client_id = \"{{ op://Revolutionise/Fuji non-prod/Deployment Client Id }}\"\n\
+                      audience  = \"api://{{ op://Revolutionise/Fuji non-prod/Deployment Client Id }}\"\n\
+                      tenant    = \"https://login.microsoftonline.com/{{op://Revolutionise/Fuji non-prod/Deployment Tenant Id}}/v2.0\"\n\
+                      broken    = \"{{ op://a\nb }}\"\n";
+        let found: Vec<&str> = references(tfvars).iter().map(|r| r.uri).collect();
+        assert_eq!(
+            found,
+            [
+                "op://Revolutionise/Fuji non-prod/Deployment Client Id",
+                "op://Revolutionise/Fuji non-prod/Deployment Client Id",
+                "op://Revolutionise/Fuji non-prod/Deployment Tenant Id",
+            ]
+        );
+        assert_eq!(
+            decrypt(&p, tfvars).0.unwrap(),
+            "client_id = \"secret(Revolutionise/Fuji non-prod/Deployment Client Id)\"\n\
+             audience  = \"api://secret(Revolutionise/Fuji non-prod/Deployment Client Id)\"\n\
+             tenant    = \"https://login.microsoftonline.com/secret(Revolutionise/Fuji non-prod/Deployment Tenant Id)/v2.0\"\n\
+             broken    = \"{{ op://a\nb }}\"\n"
+        );
     }
 
     #[test]
@@ -457,7 +451,10 @@ mod tests {
         let mut ctx = s.ctx(&p.root);
         ctx.search_path = Some(p.path("bin").into());
         let missing = materialize(&p.config(), &mut ctx, &src).unwrap_err().to_string();
-        assert!(missing.contains("the 1Password CLI `op` could not run"), "{missing}");
+        assert!(
+            missing.contains("the 1Password CLI `op` could not run") && missing.contains("[tf_project.programs] op"),
+            "{missing}"
+        );
         ctx.temp_dir = p.path("nope");
         let no_tmp = materialize(&p.config(), &mut ctx, &src).unwrap_err().to_string();
         assert!(
@@ -468,68 +465,33 @@ mod tests {
     }
 
     #[test]
-    fn the_old_default_command_warns_and_resolves() {
-        let p = with_fake_op(&format!(
-            "[tf_project.secrets]\ncommand = {:?}",
-            crate::config::DEFAULT_SECRETS_COMMAND
-        ));
+    fn the_old_secrets_command_is_ignored_with_a_warning() {
+        let p = with_fake_op(
+            "[tf_project.secrets]\ncommand = [\"op\", \"inject\", \"--in-file\", \"{in}\", \"--out-file\", \"{out}\"]",
+        );
         let (text, err) = decrypt(&p, "a = \"{{ op://v/i/f }}\"\n");
         assert_eq!(text.unwrap(), "a = \"secret(v/i/f)\"\n");
         assert!(
-            err.starts_with("warning: [tf_project.secrets] command is deprecated")
-                && err.contains("Delete the setting."),
+            err.starts_with("warning: [tf_project.secrets] command is no longer used"),
             "{err}"
         );
     }
 
     #[test]
-    fn a_custom_command_that_writes_nothing_fails() {
-        let p = with_fake_op("[tf_project.secrets]\ncommand = [\"true\"]");
-        assert!(
-            decrypt(&p, "x\n")
-                .0
-                .unwrap_err()
-                .starts_with("secrets command `true` wrote no output: ")
-        );
-        let p = with_fake_op("[tf_project.secrets]\ncommand = []");
-        let mut s = Streams::default();
-        assert!(materialize(&p.config(), &mut s.ctx(&p.root), &p.path("nope.tfvars")).is_err());
-    }
-
-    #[test]
-    fn a_custom_command_still_runs() {
-        let custom = |cmd: &str| with_fake_op(&format!("[tf_project.secrets]\ncommand = {cmd}"));
-        let p = custom(r#"["cp", "{in}", "{out}"]"#);
-        let (text, err) = decrypt(&p, "secret = 1\n");
-        assert_eq!(text.unwrap(), "secret = 1\n");
-        assert!(err.contains("Yours still runs for now"), "{err}");
-        let p = custom("[]");
-        assert_eq!(
-            decrypt(&p, "a = \"{{ op://v/i/f }}\"\n").0.unwrap(),
-            "a = \"{{ op://v/i/f }}\"\n"
-        );
-        let p = custom(r#"["false"]"#);
-        assert!(
-            decrypt(&p, "x\n")
-                .0
-                .unwrap_err()
-                .starts_with("secrets command `false` failed (")
-        );
-        let p = custom(r#"["/no/such/op"]"#);
-        assert!(
-            decrypt(&p, "x\n")
-                .0
-                .unwrap_err()
-                .starts_with("secrets command `/no/such/op` could not run: ")
-        );
-        let p = custom(r#"["cp", "{in}", "{out}"]"#);
-        let mut s = Streams::default();
-        let mut ctx = s.ctx(&p.root);
-        let missing = materialize(&p.config(), &mut ctx, &p.path("nope.tfvars"))
-            .unwrap_err()
-            .to_string();
-        assert!(missing.starts_with("tfvars file not found: "), "{missing}");
-        ctx.temp_dir = p.path("nope");
-        assert!(materialize(&p.config(), &mut ctx, &p.write("tfvars/x.tfvars", "")).is_err());
+    fn a_configured_op_path_is_used() {
+        // The fake `op` is in the project's bin/, not on PATH: only the configured path finds it.
+        for setting in [
+            "[tf_project.programs]\nop = \"bin/op\"",
+            "[tf_project.secrets]\ncommand = [\"bin/op\", \"inject\"]",
+        ] {
+            let p = with_fake_op(setting);
+            let src = p.write("tfvars/dev.tfvars", "a = \"{{ op://v/i/f }}\"\n");
+            let mut s = Streams::default();
+            let mut ctx = s.ctx(&p.root);
+            // tfp's own PATH, which lacks the project's bin/.
+            ctx.search_path = None;
+            let d = materialize(&p.config(), &mut ctx, &src).unwrap();
+            assert_eq!(d.contents(), b"a = \"secret(v/i/f)\"\n", "{setting}");
+        }
     }
 }

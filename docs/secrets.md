@@ -19,7 +19,8 @@ from:
 | `az-kv://` | `az-kv://<vault>/<secret>[/<version>]` | Azure Key Vault |
 
 References work anywhere in the file: as a whole value, inside a longer
-string, or in a multi-line string or heredoc. Spaces inside the braces are
+string, or in a multi-line string or heredoc. Names may contain spaces
+(`op://Infra/Fuji non-prod/Client Id`), and spaces just inside the braces are
 optional. Other `{{ … }}` text, such as a Go or Helm template, is left alone.
 
 ```hcl
@@ -96,13 +97,24 @@ that Azure banners usually carry in `env` already.
 If `az` isn't signed in, the error includes its own advice (usually "run
 `az login`").
 
+## Tools that aren't on `PATH`
+
+tfp runs `op` and `az` from `PATH`. If yours live elsewhere, say where in
+`tf_project.toml`:
+
+```toml
+[tf_project.programs]
+op = "/opt/1password/op"
+az = "/opt/azure-cli/bin/az"
+```
+
+`tfp self doctor` checks the programs you've set. For Key Vault, tfp puts the
+`az` program's directory first on `PATH` while signing in, so the file has to
+be called `az` (`az.cmd` on Windows), as it is after a normal install.
+
 ## Older configs: `[tf_project.secrets] command`
 
-Before tfp resolved references itself, it ran an external command over the
-whole file, by default `op inject`. That setting is deprecated:
-
-- If your config still has the old default
-  (`["op", "inject", "--in-file", "{in}", "--out-file", "{out}"]`), tfp uses
-  the built-in resolution instead and asks you to delete the setting.
-- Any other command still runs as before, with a warning. It will stop being
-  supported in a later release.
+Before tfp resolved references itself, it ran a command over the whole file,
+by default `op inject`. That setting is no longer used: tfp warns that you can
+delete it. If its first word was a path to your `op`, tfp keeps using that
+path until you set `[tf_project.programs] op`.

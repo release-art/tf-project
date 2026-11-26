@@ -1210,14 +1210,13 @@ secret_sources:
     }
 
     #[test]
-    fn a_failing_secrets_command_stops_the_command() {
-        let p = Project::new("[tf_project.secrets]\ncommand = [\"false\"]");
-        std::fs::write(
-            p.path("tf_project.toml"),
-            "[tf_project]\nterraform_binary = \"bin/terraform\"\n[tf_project.secrets]\ncommand = [\"false\"]\n",
-        )
-        .unwrap();
-        p.tfvars("dev", DEMO);
+    fn a_failing_op_stops_the_command() {
+        let p = Project::new("[tf_project.programs]\nop = \"bin/op\"");
+        chmod(&p.write("bin/op", "#!/bin/sh\nexit 1\n"), 0o755);
+        p.write(
+            "tfvars/dev.tfvars",
+            &format!("# {DEMO}\nx = \"{{{{ op://v/i/f }}}}\"\n"),
+        );
         p.fake_terraform("[ -n \"$TF_DATA_DIR\" ] && mkdir -p \"$TF_DATA_DIR\"\nexit 0");
         assert_eq!(tfp(&p, &["use", "dev"]).0, 0);
         std::fs::write(p.path("tmp/slots/dev/tfplan"), "").unwrap();
@@ -1229,7 +1228,7 @@ secret_sources:
             &["destroy"],
             &["import", "a", "b"],
         ] {
-            assert!(fails(&p, args).contains("secrets command `false` failed"), "{args:?}");
+            assert!(fails(&p, args).contains("`op inject` failed"), "{args:?}");
         }
     }
 
@@ -1371,9 +1370,6 @@ secret_sources:
                 .iter()
                 .any(|c| c.name.starts_with("op://") && c.ok && c.detail == op.display().to_string())
         );
-        let legacy = Project::new("[tf_project.secrets]\ncommand = []");
-        let checks = crate::self_commands::do_self_doctor(&legacy.config(), Some(bin.as_os_str()));
-        assert!(checks.iter().any(|c| c.name == "secrets command (deprecated)" && c.ok));
     }
 
     #[test]
@@ -1438,9 +1434,10 @@ secret_sources:
                 text.starts_with(&format!("{existing}{}", &expected[existing.len()..])),
                 "{text:?}"
             );
-            assert_eq!(
-                crate::config::Config::discover(dir.path()).unwrap().secrets_command,
-                None
+            assert!(
+                !crate::config::Config::discover(dir.path())
+                    .unwrap()
+                    .legacy_secrets_command
             );
             assert!(
                 tfp_in(dir.path(), &["self", "init"], "")
@@ -1486,13 +1483,8 @@ secret_sources:
 
     #[test]
     fn doctor_reports_problems() {
-        let p = Project::new("terraform_dir = \"missing\"\n[tf_project.secrets]\ncommand = [\"no-such-op\"]");
-        std::fs::write(
-            p.path("tf_project.toml"),
-            "[tf_project]\nterraform_binary = \"bin/terraform\"\nterraform_dir = \"missing\"\n[tf_project.secrets]\ncommand = [\"no-such-op\"]\n",
-        )
-        .unwrap();
-        p.tfvars("a", DEMO);
+        let p = Project::new("terraform_dir = \"missing\"\n[tf_project.programs]\nop = \"no-such-op\"");
+        p.write("tfvars/a.tfvars", &format!("# {DEMO}\nx = \"{{{{ op://v/i/f }}}}\"\n"));
         p.tfvars("b", r#"{"header":"terraform","project":"demo","slot":"a"}"#);
         for d in ["tmp/slots/x", "tmp/slots/y"] {
             std::fs::create_dir_all(p.path(d)).unwrap();
@@ -1501,7 +1493,7 @@ secret_sources:
         assert_eq!(code, 1);
         for line in [
             "[FAIL] terraform binary",
-            "[FAIL] secrets command `no-such-op` (deprecated) on PATH",
+            "[FAIL] op:// references: 1Password CLI `no-such-op`",
             "[FAIL] terraform_dir exists",
             "[FAIL] slot uniqueness",
             "found orphan slot directories with no matching banner: x, y",
@@ -1510,13 +1502,12 @@ secret_sources:
         }
         std::fs::write(
             p.path("tf_project.toml"),
-            "[tf_project]\nterraform_binary = \"sh\"\n[tf_project.secrets]\ncommand = [\"sh\"]\n",
+            "[tf_project]\nterraform_binary = \"sh\"\n[tf_project.programs]\nop = \"sh\"\n",
         )
         .unwrap();
         let out = tfp(&p, &["self", "doctor"]).1;
         assert!(
-            out.contains("[OK  ] terraform binary `sh`")
-                && out.contains("[OK  ] secrets command `sh` (deprecated) on PATH"),
+            out.contains("[OK  ] terraform binary `sh`") && out.contains("[OK  ] op:// references: 1Password CLI `sh`"),
             "{out}"
         );
         assert!(fails(&p, &["self", "banner", "check", "tfvars/none.tfvars"]).contains("none.tfvars"));

@@ -36,6 +36,18 @@ state_key_prefix = "terraform/azure/"   # see "Backend settings" below
 | `plugin_cache_dir` | `<tmp_dir>/plugin-cache` | Shared provider cache. `""` turns it off. |
 | `extra_lock_platforms` | none | More platforms for the provider lock file, e.g. `["windows_amd64"]`. |
 | `snapshot_retention` | `200` | State snapshots kept per slot. `0` turns automatic snapshots off. |
+| `programs.op` | `op` on `PATH` | The 1Password CLI, for `op://` secrets. |
+| `programs.az` | `az` on `PATH` | The Azure CLI, for `az-kv://` secrets and azurerm lock commands. |
+| `programs.aws` | `aws` on `PATH` | The AWS CLI, for S3 lock commands. |
+
+The `programs` settings go in their own table, for tools that aren't on
+`PATH`; like `terraform_binary`, each takes a name or a path:
+
+```toml
+[tf_project.programs]
+op = "/opt/1password/op"
+az = "C:/Program Files/Microsoft SDKs/Azure/CLI2/wbin/az.cmd"
+```
 
 A misspelt or unknown setting is an error, so typos don't go unnoticed.
 

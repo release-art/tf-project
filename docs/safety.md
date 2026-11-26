@@ -57,8 +57,9 @@ This works for two backends, detected from the slot's backend settings:
 - **azurerm** (a blob lease), using the Azure CLI `az`;
 - **s3** with DynamoDB locking, using the AWS CLI `aws`.
 
-Both CLIs need to be installed and signed in. For any backend, if you know the
-lock ID, `tfp tf force-unlock <id>` works too.
+Both CLIs need to be installed and signed in. If they aren't on `PATH`, set
+`[tf_project.programs] az` / `aws` (see [Configuration](configuration.md)).
+For any backend, if you know the lock ID, `tfp tf force-unlock <id>` works too.
 
 ## Provider downloads and the lock file
 

@@ -17,6 +17,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sovereign clouds). `op` takes none.
 - `tfp self doctor` reports each secret scheme the tfvars use and whether its
   tool (`op`, `az`) is installed.
+- **`[tf_project.programs]`** sets where `op`, `az` and `aws` are, for tools
+  that aren't on `PATH`: a name looked up on `PATH`, or a path.
 - **Intel Macs.** Releases now include a macOS x86_64 wheel and standalone
   archive, built on GitHub's Intel macOS runner.
 - **Homebrew:** `brew install release-art/tap/tf-project` on macOS and Linux.
@@ -40,11 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Release builds are stripped and link-time optimised, keeping the programs at
   about 5.5 MB with the Azure SDK included.
 
-### Deprecated
-- `[tf_project.secrets] command`. Configs still carrying the old default
-  (`op inject --in-file {in} --out-file {out}`) get the built-in resolution
-  and a warning to delete the setting. Any other command still runs as
-  before, with a warning; it will be removed in a later release.
+### Removed
+- **`[tf_project.secrets] command`** is no longer used: tfp doesn't run
+  custom whole-file commands any more. A config that still has it gets a
+  warning that it can be deleted, and if the command's first word was a path
+  to `op`, that path keeps being used until `programs.op` is set.
+
+### Fixed
+- Secret references whose names contain spaces
+  (`{{ op://Vault/Fuji non-prod/Client Id }}`) were left unresolved in
+  0.3.1rc1 and reached Terraform as literal text. They are resolved now.
 
 ## [0.3.0] - 2026-11-26
 

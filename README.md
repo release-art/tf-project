@@ -341,7 +341,7 @@ writes the tag into it (`bin/rust/set-version.sh`) before building.
    - Builds a wheel per platform (Linux x86_64 + arm64, macOS arm64,
      Windows x86_64) and the sdist, with the version set from the tag.
    - Signs both with [Sigstore][sigstore] (keyless, transparency-logged).
-   - Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
+   - Publishes to PyPI via OIDC trusted publishing.
    - Creates a GitHub Release with the extracted changelog section and the
      signed artifacts attached: the wheels and sdist, plus each platform's
      programs as a standalone `.tar.gz` / `.zip` (`bin/rust/archive.py`).

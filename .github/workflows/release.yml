@@ -5,7 +5,7 @@
 #   2. Builds a wheel per platform and the sdist, with the version set from the tag, and packs each wheel's
 #      programs as a standalone download (.tar.gz, .zip for Windows) for the GitHub Release.
 #   3. Signs them with Sigstore (transparency-logged, keyless).
-#   4. Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
+#   4. Publishes to PyPI via OIDC trusted publishing.
 #   5. Creates a GitHub Release with the changelog notes and the signed artifacts.
 #
 # No code-side version bump: bin/rust/set-version.sh writes the tag into rust/Cargo.toml, which maturin reads.
@@ -122,12 +122,6 @@ jobs:
         run: |
           mkdir -p signatures
           mv dist/*.sigstore.json binaries/*.sigstore.json signatures/
-
-      - name: Publish to TestPyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
-        with:
-          repository-url: https://test.pypi.org/legacy/
-          attestations: false  # the PyPI step below makes the real ones
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1

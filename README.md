@@ -31,14 +31,15 @@ What you get:
 ## Install
 
 ```sh
-pip install tf-project        # or: uv tool install tf-project
+brew install release-art/tap/tf-project   # macOS, Linux
+pip install tf-project                     # or: uv tool install tf-project
 ```
 
-That installs two names for the same program: `tf-project` and `tfp`. It's a
-single native executable for Linux (x86_64, arm64), macOS (Apple Silicon) and
-Windows (x86_64); Python is only the delivery vehicle. Prefer no Python? Each
-[GitHub release](https://github.com/release-art/tf-project/releases) also has
-the programs as a plain `.tar.gz` / `.zip`.
+Either way you get two names for the same program: `tf-project` and `tfp`.
+It's a single native executable for macOS (Apple Silicon, Intel), Linux
+(x86_64, arm64) and Windows (x86_64); with pip, Python is only the delivery
+vehicle. Each [GitHub release](https://github.com/release-art/tf-project/releases)
+also has the programs as a plain `.tar.gz` / `.zip`.
 
 ## A five-minute tour
 

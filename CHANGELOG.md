@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sovereign clouds). `op` takes none.
 - `tfp self doctor` reports each secret scheme the tfvars use and whether its
   tool (`op`, `az`) is installed.
+- **Intel Macs.** Releases now include a macOS x86_64 wheel and standalone
+  archive, built on GitHub's Intel macOS runner.
+- **Homebrew:** `brew install release-art/tap/tf-project` on macOS and Linux.
 - **Documentation** in `docs/`: configuration, commands, secrets, safety and
   recovery, and development. The README is now a short introduction and tour.
 

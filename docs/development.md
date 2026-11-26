@@ -53,15 +53,25 @@ it (`bin/rust/set-version.sh`) before building.
 The **Release** workflow then:
 
 - re-runs CI on the tagged commit;
-- builds a wheel for each platform (Linux x86_64 and arm64, macOS arm64,
+- builds a wheel for each platform (Linux x86_64 and arm64, macOS arm64 and x86_64,
   Windows x86_64) and the source distribution;
 - packs each platform's programs as a standalone `.tar.gz` / `.zip`;
 - signs everything with [Sigstore](https://www.sigstore.dev/);
 - publishes the wheels and source distribution to PyPI;
-- creates a GitHub release with the changelog section and all the files.
+- creates a GitHub release with the changelog section and all the files;
+- for a stable release, points the Homebrew formula in
+  [release-art/homebrew-tap](https://github.com/release-art/homebrew-tap) at
+  the new archives (`bin/homebrew-formula.py`), committed by the Release.art
+  workflow bot.
 
 A tag like `v1.2.0rc1` (also `a1`, `b1`) makes a pre-release on GitHub and
 PyPI. There is no TestPyPI step: the name `tf-project` isn't available there.
 
-PyPI publishing uses trusted publishing, set up once on PyPI for this
-repository's `release.yml` and its `release` GitHub environment.
+One-time setup the workflow relies on:
+
+- **PyPI:** trusted publishing, set up on PyPI for this repository's
+  `release.yml` and its `release` GitHub environment.
+- **Homebrew:** the *Release.art workflow bot* GitHub App, installed on
+  `release-art/homebrew-tap` with *Contents: read and write*. The workflow
+  signs in with the organisation variable `RELEASE_ART_WORKFLOW_APP_ID` and
+  secret `RELEASE_ART_WORKFLOW_APP_PK`.

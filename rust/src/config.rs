@@ -15,8 +15,6 @@ pub const CONFIG_TABLE: &str = "tf_project";
 pub const PYPROJECT_FILE_NAME: &str = "pyproject.toml";
 /// Its table.
 pub const PYPROJECT_TABLE: [&str; 2] = ["tool", "tf_project"];
-/// The default secrets command: 1Password's `op inject`.
-pub const DEFAULT_SECRETS_COMMAND: [&str; 6] = ["op", "inject", "--in-file", "{in}", "--out-file", "{out}"];
 
 /// The configuration, resolved.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +33,10 @@ pub struct Config {
     pub terraform_binary: String,
     /// `-backend-config` key/values for every slot.
     pub backend_config: BTreeMap<String, String>,
-    /// The tfvars preprocessor; empty disables it.
-    pub secrets_command: Vec<String>,
+    /// The other programs tfp runs.
+    pub programs: Programs,
+    /// Whether the config still has the old `[tf_project.secrets] command`, which is no longer used.
+    pub legacy_secrets_command: bool,
     /// `TF_PLUGIN_CACHE_DIR`; none when disabled with `plugin_cache_dir = ""`.
     pub plugin_cache_dir: Option<PathBuf>,
     /// `GOOS_GOARCH` platforms locked on top of the defaults.
@@ -62,6 +62,8 @@ struct Table {
     backend_config: BTreeMap<String, String>,
     #[serde(default)]
     secrets: Secrets,
+    #[serde(default)]
+    programs: ProgramsTable,
     plugin_cache_dir: Option<PathBuf>,
     #[serde(default)]
     extra_lock_platforms: Vec<String>,
@@ -69,18 +71,39 @@ struct Table {
     snapshot_retention: u32,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Secrets {
-    #[serde(default = "default_secrets_command")]
-    command: Vec<String>,
+    command: Option<Vec<String>>,
 }
 
-impl Default for Secrets {
-    fn default() -> Self {
-        Self {
-            command: default_secrets_command(),
-        }
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProgramsTable {
+    op: Option<String>,
+    az: Option<String>,
+    aws: Option<String>,
+}
+
+/// The programs tfp runs besides Terraform: names looked up on `PATH`, or absolute paths.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Programs {
+    /// The 1Password CLI, for `op://` secrets.
+    pub op: String,
+    /// The Azure CLI, for `az-kv://` secrets and the azurerm lock commands.
+    pub az: String,
+    /// The AWS CLI, for the S3 lock commands.
+    pub aws: String,
+}
+
+/// A program setting: `default()` when unset; a path (it has a separator) made absolute against `root`; or a name,
+/// kept for a `PATH` lookup when run.
+fn program(key: &str, value: Option<String>, default: impl FnOnce() -> String, root: &Path) -> Result<String> {
+    match value {
+        None => Ok(default()),
+        Some(v) if v.is_empty() => Err(Error::Config(format!("`{key}` must be a non-empty string"))),
+        Some(v) if v.contains(['/', '\\']) => Ok(absolute(root, Path::new(&v)).display().to_string()),
+        Some(v) => Ok(v),
     }
 }
 
@@ -98,10 +121,6 @@ fn default_tmp_dir() -> PathBuf {
 
 fn default_retention() -> u32 {
     200
-}
-
-fn default_secrets_command() -> Vec<String> {
-    DEFAULT_SECRETS_COMMAND.map(str::to_owned).to_vec()
 }
 
 /// `terraform` as found on `path`, or the bare name for the run to fail on.
@@ -223,13 +242,28 @@ impl Config {
             Some(p) => Some(absolute(&root, &p)),
             None => Some(tmp_dir.join("plugin-cache")),
         };
-        let terraform_binary = match raw.terraform_binary {
-            None => default_terraform(std::env::var_os("PATH"), &root),
-            Some(b) if b.is_empty() => {
-                return Err(Error::Config("`terraform_binary` must be a non-empty string".into()));
-            }
-            Some(b) if b.contains(['/', '\\']) => absolute(&root, Path::new(&b)).display().to_string(),
-            Some(b) => b,
+        let terraform_binary = program(
+            "terraform_binary",
+            raw.terraform_binary,
+            || default_terraform(std::env::var_os("PATH"), &root),
+            &root,
+        )?;
+        // The old secrets command may name a custom `op`: keep using it until `programs.op` is set.
+        let legacy_op = raw
+            .secrets
+            .command
+            .as_ref()
+            .and_then(|c| c.first())
+            .filter(|p| p.as_str() != "op" && Path::new(p).file_stem().is_some_and(|s| s == "op"));
+        let programs = Programs {
+            op: program(
+                "programs.op",
+                raw.programs.op.or(legacy_op.cloned()),
+                || "op".into(),
+                &root,
+            )?,
+            az: program("programs.az", raw.programs.az, || "az".into(), &root)?,
+            aws: program("programs.aws", raw.programs.aws, || "aws".into(), &root)?,
         };
         Ok(Self {
             terraform_dir: absolute(&root, &raw.terraform_dir),
@@ -239,7 +273,8 @@ impl Config {
             state_key_prefix: raw.state_key_prefix,
             terraform_binary,
             backend_config: raw.backend_config,
-            secrets_command: raw.secrets.command,
+            programs,
+            legacy_secrets_command: raw.secrets.command.is_some(),
             plugin_cache_dir,
             extra_lock_platforms: raw.extra_lock_platforms,
             snapshot_retention: raw.snapshot_retention,
@@ -359,7 +394,8 @@ mod tests {
         assert_eq!(c.tmp_dir, p.path("tmp"));
         assert_eq!(c.plugin_cache_dir, Some(p.path("tmp/plugin-cache")));
         assert_eq!(c.snapshot_retention, 200);
-        assert_eq!(c.secrets_command, Vec::<String>::new());
+        let programs = (c.programs.op.as_str(), c.programs.az.as_str(), c.programs.aws.as_str());
+        assert_eq!((programs, c.legacy_secrets_command), (("op", "az", "aws"), false));
         assert_eq!(c.terraform_binary, p.path("bin/terraform").display().to_string());
         assert_eq!(c.slot_dir("dev"), p.path("tmp/slots/dev"));
         for (path, rel) in [
@@ -382,7 +418,8 @@ mod tests {
         let c = load(
             "[tf_project]\ntmp_dir = \"/abs/tmp\"\nplugin_cache_dir = \"cache\"\nterraform_binary = \"bin/tofu\"\n\
              state_key_prefix = \"p/\"\nextra_lock_platforms = [\"windows_amd64\"]\nsnapshot_retention = 0\n\
-             backend_config = { a = \"b\" }\n",
+                          backend_config = { a = \"b\" }\n\
+             [tf_project.programs]\nop = \"tools/op\"\naz = \"/opt/az/bin/az\"\naws = \"aws2\"\n",
         )
         .unwrap();
         assert_eq!(c.tmp_dir, Path::new("/abs/tmp"));
@@ -391,13 +428,28 @@ mod tests {
             c.terraform_binary,
             c.project_root.join("bin/tofu").display().to_string()
         );
-        assert_eq!(c.secrets_command[0], "op");
+        assert_eq!(c.programs.op, c.project_root.join("tools/op").display().to_string());
+        assert_eq!(
+            (c.programs.az.as_str(), c.programs.aws.as_str()),
+            ("/opt/az/bin/az", "aws2")
+        );
         assert_eq!(c.snapshot_retention, 0);
         assert_eq!(c.backend_config["a"], "b");
         assert_eq!(c.state_key_prefix, "p/");
         let disabled = load("[tf_project]\nplugin_cache_dir = \"\"\n[tf_project.secrets]\n").unwrap();
         assert_eq!(disabled.plugin_cache_dir, None);
-        assert_eq!(disabled.secrets_command[0], "op");
+        assert!(!disabled.legacy_secrets_command);
+        // The old secrets command is flagged, and lends its `op` path until `programs.op` is set.
+        let legacy =
+            |command: &str| load(&format!("[tf_project]\n[tf_project.secrets]\ncommand = {command}\n")).unwrap();
+        let old = legacy(r#"["/opt/op", "inject"]"#);
+        assert_eq!(
+            (old.legacy_secrets_command, old.programs.op.as_str()),
+            (true, "/opt/op")
+        );
+        assert_eq!(legacy(r#"["op", "inject"]"#).programs.op, "op");
+        assert_eq!(legacy(r#"["sops", "-d"]"#).programs.op, "op");
+        assert_eq!(legacy("[]").programs.op, "op");
     }
 
     #[test]
@@ -426,6 +478,16 @@ mod tests {
     fn rejects() {
         assert!(config_error("[tf_project]\nnope = 1\n").contains("unknown field `nope`"));
         assert!(config_error("[tf_project]\nterraform_binary = \"\"\n").contains("non-empty"));
+        for program in ["op", "az", "aws"] {
+            let body = format!("[tf_project]\n[tf_project.programs]\n{program} = \"\"\n");
+            assert_eq!(
+                config_error(&body),
+                format!("`programs.{program}` must be a non-empty string")
+            );
+        }
+        assert!(
+            config_error("[tf_project]\n[tf_project.programs]\ngcloud = \"g\"\n").contains("unknown field `gcloud`")
+        );
         assert!(config_error("[tf_project]\nsnapshot_retention = -1\n").contains("invalid value"));
         assert_eq!(
             config_error("[tf_project]\nextra_lock_platforms = [\"Linux\"]\n"),

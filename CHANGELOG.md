@@ -4,6 +4,56 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-11-26
+
+### Added
+- **Azure Key Vault.** `{{ az-kv://<vault>/<kind>/<name>[/<version>] }}`
+  references in tfvars, following Key Vault's own URLs, read with Microsoft's
+  Azure SDK for Rust: `secrets/` gives the value, `keys/` the public key as a
+  JSON Web Key, and `certificates/` the public certificate as PEM. tfp signs
+  in through the Azure CLI once per run and reads everything concurrently.
+- **`secrets_config` in the banner**, keyed by scheme, configures each secret
+  source. `az-kv` takes `tenant` and `subscription` (defaulting to the
+  banner's `ARM_TENANT_ID` / `ARM_SUBSCRIPTION_ID`) and `vault_url` (for
+  sovereign clouds). `op` takes none.
+- `tfp self doctor` reports each secret scheme the tfvars use and whether its
+  tool (`op`, `az`) is installed.
+- **`[tf_project.programs]`** sets where `op`, `az` and `aws` are, for tools
+  that aren't on `PATH`: a name looked up on `PATH`, or a path.
+- **Intel Macs.** Releases now include a macOS x86_64 wheel and standalone
+  archive, built on GitHub's Intel macOS runner.
+- **Homebrew:** `brew install release-art/tap/tf-project` on macOS and Linux.
+- **Documentation** in `docs/`: configuration, commands, secrets, safety and
+  recovery, and development. The README is now a short introduction and tour.
+
+### Changed
+- **tfp resolves secret references itself.** It collects the
+  `{{ scheme://… }}` references in a tfvars file, fetches each scheme's
+  together, and writes the filled-in copy to a private directory that is
+  shredded afterwards. `op://` references are read in a single `op inject`
+  call, so values with newlines or quotes come back intact.
+- References are found anywhere in a tfvars file, including inside
+  multi-line strings and heredocs, with or without spaces inside the braces.
+  Other `{{ … }}` (Go templates and the like) is left as written.
+- A reference with an unknown scheme is an error naming the file and the
+  scheme, instead of reaching Terraform unresolved.
+- A tfvars file without references is used as it is: no copy, and no `op`
+  call.
+- `tfp self init` no longer writes a `[tf_project.secrets]` section.
+- Release builds are stripped and link-time optimised, keeping the programs at
+  about 5.5 MB with the Azure SDK included.
+
+### Removed
+- **`[tf_project.secrets] command`** is no longer used: tfp doesn't run
+  custom whole-file commands any more. A config that still has it gets a
+  warning that it can be deleted, and if the command's first word was a path
+  to `op`, that path keeps being used until `programs.op` is set.
+
+### Fixed
+- Secret references whose names contain spaces
+  (`{{ op://Vault/Fuji non-prod/Client Id }}`) were left unresolved in
+  0.3.1rc1 and reached Terraform as literal text. They are resolved now.
+
 ## [0.3.0] - 2026-11-26
 
 ### Changed

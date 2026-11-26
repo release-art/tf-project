@@ -85,6 +85,8 @@ pub struct Ctx<'a> {
     pub search_path: Option<std::ffi::OsString>,
     /// Where decrypted tfvars are written, in a private directory.
     pub temp_dir: PathBuf,
+    /// The HTTP client for cloud SDKs (Azure Key Vault); the SDK's own when none.
+    pub http: Option<std::sync::Arc<dyn azure_core::http::HttpClient>>,
 }
 
 impl Ctx<'_> {
@@ -131,16 +133,14 @@ pub(crate) mod testing {
     }
 
     impl Project {
-        /// A project whose `[tf_project]` table also has `extra`. Secrets are off; Terraform is `bin/terraform`.
+        /// A project whose `[tf_project]` table also has `extra`; Terraform is `bin/terraform`.
         pub(crate) fn new(extra: &str) -> Self {
             let dir = tempfile::tempdir().unwrap();
             let root = crate::resolve(dir.path());
             let project = Self { _dir: dir, root };
             project.write(
                 "tf_project.toml",
-                &format!(
-                    "[tf_project]\nterraform_binary = \"bin/terraform\"\n{extra}\n[tf_project.secrets]\ncommand = []\n"
-                ),
+                &format!("[tf_project]\nterraform_binary = \"bin/terraform\"\n{extra}\n"),
             );
             std::fs::create_dir_all(project.root.join("terraform/demo")).unwrap();
             std::fs::create_dir_all(project.root.join("tfvars")).unwrap();
@@ -216,6 +216,7 @@ pub(crate) mod testing {
                 terraform: terraform::Options::default(),
                 search_path: None,
                 temp_dir: std::env::temp_dir(),
+                http: None,
             }
         }
 

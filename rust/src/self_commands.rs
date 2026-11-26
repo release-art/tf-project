@@ -14,14 +14,14 @@ use crate::commands::{
 use crate::config::{
     CONFIG_FILE_NAME, CONFIG_TABLE, Config, PYPROJECT_FILE_NAME, PYPROJECT_TABLE, locate, parse_toml, walk,
 };
-use crate::lock::{LockProvider, LockStatus, select_provider};
+use crate::lock::{Backend, LockProvider, LockStatus, select_provider};
 use crate::models::{LastInvocation, MyState, Versioned};
 use crate::state::load_state;
 use crate::terraform::{self, env_for_slot};
 use crate::text::utc;
 use crate::{Ctx, Error, Result, io_error, resolve, say, slots};
 
-/// The `[tf_project]` body `tfp self init` writes, under `{table}`.
+/// The body of the `[tf_project]` table `tfp self init` writes.
 const DEFAULT_CONFIG_BODY: &str = r#"terraform_dir = "terraform"
 tfvars_dir    = "tfvars"
 tmp_dir       = "tmp"
@@ -38,13 +38,15 @@ state_key_prefix = ""
 # writes a snapshot here before mutating. Set to 0 to disable.
 # snapshot_retention = 200
 
-[{table}.secrets]
-# Pluggable tfvars preprocessor. Set `command = []` to disable.
-command = ["op", "inject", "--in-file", "{in}", "--out-file", "{out}"]
+# Where to find the other tools tfp runs, when they aren't on PATH.
+# [tf_project.programs]
+# op  = "/opt/1password/op"       # 1Password CLI, for {{ op://… }} secrets
+# az  = "/opt/az/bin/az"          # Azure CLI, for {{ az-kv://… }} secrets and azurerm locks
+# aws = "/usr/local/bin/aws"      # AWS CLI, for S3 locks
 "#;
 
 fn render_default_config(table: &str) -> String {
-    format!("[{table}]\n{}", DEFAULT_CONFIG_BODY.replace("{table}", table))
+    format!("[{table}]\n{DEFAULT_CONFIG_BODY}")
 }
 
 /// `tfp self init`: write a starter config, into `pyproject.toml` when there is one.
@@ -99,7 +101,8 @@ pub fn config_json(config: &Config) -> Value {
         "state_key_prefix": config.state_key_prefix,
         "terraform_binary": config.terraform_binary,
         "backend_config": config.backend_config,
-        "secrets": {"command": config.secrets_command},
+        "secret_sources": {"op": "1Password CLI (op inject)"},
+        "programs": {"op": config.programs.op, "az": config.programs.az, "aws": config.programs.aws},
         "extra_lock_platforms": config.extra_lock_platforms,
         "snapshot_retention": config.snapshot_retention,
     })
@@ -202,11 +205,66 @@ fn check(name: impl Into<String>, ok: bool, detail: impl Into<String>) -> Doctor
     }
 }
 
-/// `tfp self doctor`: is everything tf-project needs in place?
+/// Can the secret references in the tfvars be resolved? One check per scheme in use.
+fn secret_checks(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Vec<DoctorCheck> {
+    let mut schemes: Vec<String> = slots::list_slots(config)
+        .iter()
+        .filter_map(|s| std::fs::read_to_string(&s.tfvars).ok())
+        .flat_map(|text| crate::secrets::schemes(&text))
+        .collect();
+    schemes.sort();
+    schemes.dedup();
+    if schemes.is_empty() {
+        return vec![check("secret references", true, "none in the tfvars")];
+    }
+    schemes
+        .into_iter()
+        .map(|scheme| {
+            let tool = |key: &str, what: &str, program: &str, install: &str| {
+                let name = format!("{scheme}:// references: {what} `{program}`");
+                match found(program) {
+                    Some(path) => check(name, true, path),
+                    None => check(
+                        name,
+                        false,
+                        format!("not found; install it ({install}) or set [tf_project.programs] {key}"),
+                    ),
+                }
+            };
+            match scheme.as_str() {
+                "op" => tool(
+                    "op",
+                    "1Password CLI",
+                    &config.programs.op,
+                    "https://developer.1password.com/docs/cli/get-started/",
+                ),
+                "az-kv" => tool(
+                    "az",
+                    "Azure CLI",
+                    &config.programs.az,
+                    "https://learn.microsoft.com/cli/azure/install-azure-cli",
+                ),
+                other => check(
+                    format!("{other}:// references"),
+                    false,
+                    "no secret source for this scheme",
+                ),
+            }
+        })
+        .collect()
+}
+
+/// `tfp self doctor`: is everything tf-project needs in place? Programs are looked up on `path` (tfp's own `PATH`
+/// when none).
 #[must_use]
-pub fn do_self_doctor(config: &Config) -> Vec<DoctorCheck> {
+pub fn do_self_doctor(config: &Config, path: Option<&std::ffi::OsStr>) -> Vec<DoctorCheck> {
     let binary = &config.terraform_binary;
-    let found = |program: &str| which::which(program).ok().map(|p| p.display().to_string());
+    let path = path.map(ToOwned::to_owned).or_else(|| std::env::var_os("PATH"));
+    let found = |program: &str| {
+        which::which_in(program, path.clone(), &config.project_root)
+            .ok()
+            .map(|p| p.display().to_string())
+    };
     let mut checks = vec![match found(binary) {
         Some(path) => check(format!("terraform binary `{binary}`"), true, path),
         None => check(
@@ -215,20 +273,7 @@ pub fn do_self_doctor(config: &Config) -> Vec<DoctorCheck> {
             "not found; install it or set `terraform_binary`",
         ),
     }];
-    checks.push(match config.secrets_command.first() {
-        None => check("secrets command", true, "disabled (command = [])"),
-        Some(program) => {
-            let name = format!("secrets command `{program}` on PATH");
-            match found(program) {
-                Some(path) => check(name, true, path),
-                None => check(
-                    name,
-                    false,
-                    format!("not found; install `{program}` or disable in [tf_project.secrets]"),
-                ),
-            }
-        }
-    });
+    checks.extend(secret_checks(config, &found));
     for (name, dir, may_be_missing) in [
         ("terraform_dir", &config.terraform_dir, false),
         ("tfvars_dir", &config.tfvars_dir, false),
@@ -521,9 +566,13 @@ pub fn do_self_providers_lock(config: &Config, ctx: &mut Ctx, platforms: &[Strin
     terraform::run(ctx, &cmd, &env_for_slot(config, &state))
 }
 
-/// The slot's lock provider, its CLI looked up on the context's `PATH`.
-fn provider(state: &MyState, ctx: &Ctx) -> Result<LockProvider> {
+/// The slot's lock provider, its CLI taken from `[tf_project.programs]` and looked up on the context's `PATH`.
+fn provider(config: &Config, state: &MyState, ctx: &Ctx) -> Result<LockProvider> {
     let mut provider = select_provider(state)?;
+    provider.program = match provider.backend {
+        Backend::Azure => config.programs.az.clone(),
+        Backend::S3 => config.programs.aws.clone(),
+    };
     provider.search_path.clone_from(&ctx.search_path);
     Ok(provider)
 }
@@ -534,7 +583,7 @@ fn provider(state: &MyState, ctx: &Ctx) -> Result<LockProvider> {
 /// No usable active slot, an unsupported backend, or the cloud CLI fails.
 pub fn do_self_lock_status(config: &Config, ctx: &Ctx) -> Result<LockStatus> {
     let state = require_slot_state(config, &require_active(config, ctx)?.name)?;
-    provider(&state, ctx)?.status()
+    provider(config, &state, ctx)?.status()
 }
 
 /// How `tfp self lock break` released the lock.
@@ -553,7 +602,7 @@ pub enum BreakResult {
 /// No usable active slot, an unsupported backend, no lock to break (politely), or the backend break fails.
 pub fn do_self_lock_break(config: &Config, ctx: &mut Ctx, blunt: bool) -> Result<BreakResult> {
     let state = require_slot_state(config, &require_active(config, ctx)?.name)?;
-    let provider = provider(&state, ctx)?;
+    let provider = provider(config, &state, ctx)?;
     // If the status itself fails (say, a CLI auth blip), the user still asked for the lock to go: break it.
     if !blunt && let Ok(status) = provider.status() {
         let Some(id) = status.info.id else {

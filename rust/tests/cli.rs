@@ -27,7 +27,7 @@ impl Project {
         std::fs::create_dir_all(root.join("tfvars")).unwrap();
         std::fs::write(
             root.join("tf_project.toml"),
-            "[tf_project]\nterraform_binary = \"bin/terraform\"\n[tf_project.secrets]\ncommand = []\n",
+            "[tf_project]\nterraform_binary = \"bin/terraform\"\n",
         )
         .unwrap();
         std::fs::write(

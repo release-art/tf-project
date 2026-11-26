@@ -27,6 +27,7 @@ jobs:
       matrix:
         include:
           - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: macos-15-intel, target: x86_64-apple-darwin }
           - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
           - { os: windows-latest, target: x86_64-pc-windows-msvc }
@@ -88,6 +89,8 @@ jobs:
     permissions:
       id-token: write  # PyPI trusted publishing + Sigstore
       contents: write  # the GitHub Release
+    outputs:
+      prerelease: ${{ steps.ver.outputs.prerelease }}
     steps:
       - uses: actions/checkout@v6
       # dist/ is what PyPI gets; the standalone downloads stay apart in binaries/.
@@ -158,3 +161,45 @@ jobs:
             binaries/*
             signatures/*.sigstore.json
           fail_on_unmatched_files: true
+
+  homebrew:
+    # Point release-art/homebrew-tap's formula at this release, committed by the Release.art workflow bot (a GitHub
+    # App installed on the tap with Contents: read and write). Stable releases only.
+    needs: publish
+    if: needs.publish.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/create-github-app-token@v3
+        id: bot
+        with:
+          app-id: ${{ vars.RELEASE_ART_WORKFLOW_APP_ID }}
+          private-key: ${{ secrets.RELEASE_ART_WORKFLOW_APP_PK }}
+          owner: release-art
+          repositories: homebrew-tap
+          permission-contents: write
+      - uses: actions/checkout@v6
+        with:
+          repository: release-art/homebrew-tap
+          token: ${{ steps.bot.outputs.token }}
+          path: homebrew-tap
+      - name: Write the formula from this release's archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python bin/homebrew-formula.py "$GITHUB_REF_NAME" > homebrew-tap/Formula/tf-project.rb
+      - name: Commit and push as the workflow bot
+        working-directory: homebrew-tap
+        env:
+          GH_TOKEN: ${{ steps.bot.outputs.token }}
+          BOT: ${{ steps.bot.outputs.app-slug }}[bot]
+        run: |
+          if git diff --quiet; then
+            echo "Formula already points at ${GITHUB_REF_NAME}."
+            exit 0
+          fi
+          git config user.name "$BOT"
+          git config user.email "$(gh api "/users/$BOT" --jq .id)+$BOT@users.noreply.github.com"
+          git commit -m "tf-project ${GITHUB_REF_NAME#v}" Formula/tf-project.rb
+          git push

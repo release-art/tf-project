@@ -151,10 +151,10 @@ fn check_apply_plan(config: &Config, slot: &str) -> Result<()> {
 }
 
 /// SHA-256 over the decrypted tfvars and every `.tf` under the project, so editing a module stales the plan too.
-fn plan_inputs_sha256(state: &MyState, decrypted: &Path) -> Result<String> {
+fn plan_inputs_sha256(state: &MyState, decrypted: &[u8]) -> Result<String> {
     let mut h = Sha256::new();
     h.update(b"tfvars:");
-    h.update(std::fs::read(decrypted).map_err(io_error(decrypted))?);
+    h.update(decrypted);
     let tf_files = walkdir::WalkDir::new(&state.source_root)
         .sort_by_file_name()
         .into_iter()
@@ -170,7 +170,7 @@ fn plan_inputs_sha256(state: &MyState, decrypted: &Path) -> Result<String> {
     Ok(hex(&h.finalize()))
 }
 
-fn write_tfplan_meta(config: &Config, state: &MyState, resolved: &ResolvedSlot, decrypted: &Path) -> Result<()> {
+fn write_tfplan_meta(config: &Config, state: &MyState, resolved: &ResolvedSlot, decrypted: &[u8]) -> Result<()> {
     let meta = TfplanMeta {
         inputs_sha256: plan_inputs_sha256(state, decrypted)?,
         project: resolved.project.clone(),
@@ -182,7 +182,7 @@ fn write_tfplan_meta(config: &Config, state: &MyState, resolved: &ResolvedSlot, 
 }
 
 /// Refuse a saved plan made from other inputs or another banner.
-fn check_tfplan_fresh(config: &Config, ctx: &mut Ctx, active: &ActiveState, decrypted: &Path) -> Result<()> {
+fn check_tfplan_fresh(config: &Config, ctx: &mut Ctx, active: &ActiveState, decrypted: &[u8]) -> Result<()> {
     let ActiveState {
         resolved,
         state,
@@ -534,14 +534,14 @@ pub fn do_rm(config: &Config, ctx: &Ctx, name: &str, force: bool) -> Result<std:
 pub fn do_plan(config: &Config, ctx: &mut Ctx, flags: &Flags) -> Result<()> {
     let ActiveState { resolved, state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
-    let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
+    let decrypted = materialize(config, ctx, &state.tfvars)?;
     let var_file = decrypted.path().display().to_string();
     terraform::run(
         ctx,
         &build_plan_argv(config, &state, &var_file, flags),
         &env_for_slot(config, &state),
     )?;
-    write_tfplan_meta(config, &state, &resolved, decrypted.path())
+    write_tfplan_meta(config, &state, &resolved, decrypted.contents())
 }
 
 /// `tfp apply`: apply the saved plan, refusing one made from other inputs unless `force`; the plan is spent after.
@@ -554,9 +554,9 @@ pub fn do_apply(config: &Config, ctx: &mut Ctx, force: bool, extra: &[String]) -
     check_data_dir(config, &state.slot)?;
     check_apply_plan(config, &state.slot)?;
     let _lock = try_exclusive_lock(&config.apply_lock(&state.slot))?;
-    let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
+    let decrypted = materialize(config, ctx, &state.tfvars)?;
     if !force {
-        check_tfplan_fresh(config, ctx, &active, decrypted.path())?;
+        check_tfplan_fresh(config, ctx, &active, decrypted.contents())?;
     }
     let var_file = decrypted.path().display().to_string();
     terraform::run(
@@ -577,7 +577,7 @@ pub fn do_targeted(config: &Config, ctx: &mut Ctx, subcommand: &str, flags: &Fla
     let ActiveState { state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
     let _lock = try_exclusive_lock(&config.apply_lock(&state.slot))?;
-    let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
+    let decrypted = materialize(config, ctx, &state.tfvars)?;
     let var_file = decrypted.path().display().to_string();
     let cmd = build_targeted_argv(config, &state, subcommand, &var_file, flags);
     terraform::run(ctx, &cmd, &env_for_slot(config, &state))
@@ -630,7 +630,7 @@ pub fn do_import(config: &Config, ctx: &mut Ctx, address: &str, id: &str, extra:
     let ActiveState { state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
     crate::self_commands::auto_snapshot(config, &state, "import")?;
-    let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
+    let decrypted = materialize(config, ctx, &state.tfvars)?;
     let var_file = decrypted.path().display().to_string();
     let cmd = build_import_argv(config, &state, &var_file, address, id, extra);
     terraform::run(ctx, &cmd, &env_for_slot(config, &state))
@@ -947,7 +947,7 @@ pub(crate) mod tests {
     fn resync_meta(p: &Project, c: &Config) {
         let mut meta = TfplanMeta::load_file(&c.tfplan_meta("dev")).unwrap();
         let state = load_state(c, "dev").unwrap().unwrap();
-        meta.inputs_sha256 = plan_inputs_sha256(&state, &p.path("tfvars/dev.tfvars")).unwrap();
+        meta.inputs_sha256 = plan_inputs_sha256(&state, &std::fs::read(p.path("tfvars/dev.tfvars")).unwrap()).unwrap();
         meta.dump_file(&c.tfplan_meta("dev")).unwrap();
     }
 

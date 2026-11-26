@@ -1,17 +1,14 @@
----
 # Tag-driven release pipeline.
 #
-# Push a tag matching `v*.*.*` (e.g. `v0.2.0`, `v1.0.0rc1`) and this workflow:
-#   1. Re-runs CI (lint, type-check, test) against the tagged commit.
-#   2. Builds the sdist + wheel with the version pinned from the tag.
-#   3. Signs both artifacts with Sigstore (transparency-logged, keyless).
-#   4. Publishes to TestPyPI and then PyPI via OIDC trusted publishing.
-#   5. Creates a GitHub Release with changelog notes and the signed
-#      artifacts (.whl + .tar.gz + .sigstore.json bundles) attached.
+# Push a tag matching `v*.*.*` (e.g. `v2.0.0`, `v2.1.0rc1`) and this workflow:
+#   1. Re-runs CI against the tagged commit.
+#   2. Builds a wheel per platform and the sdist, with the version set from the tag, and packs each wheel's
+#      programs as a standalone download (.tar.gz, .zip for Windows) for the GitHub Release.
+#   3. Signs them with Sigstore (transparency-logged, keyless).
+#   4. Publishes to PyPI via OIDC trusted publishing.
+#   5. Creates a GitHub Release with the changelog notes and the signed artifacts.
 #
-# No code-side version bump - the next release version is whatever you
-# tag next. `pyproject.toml`'s `[tool.pdm.version] source = "scm"` derives
-# the wheel version from `${GITHUB_REF_NAME#v}`.
+# No code-side version bump: bin/rust/set-version.sh writes the tag into rust/Cargo.toml, which maturin reads.
 name: Release
 
 on:
@@ -24,33 +21,93 @@ jobs:
   test:
     uses: ./.github/workflows/ci.yml
 
-  publish:
+  wheels:
     needs: test
+    strategy:
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin }
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - run: bin/rust/set-version.sh "${GITHUB_REF_NAME#v}"
+        shell: bash
+      - run: echo "RUST_TOOLCHAIN=$(sed -n 's/^channel = "\(.*\)"/\1/p' rust/rust-toolchain.toml)" >> "$GITHUB_ENV"
+        shell: bash
+      - uses: PyO3/maturin-action@v1
+        with:
+          rust-toolchain: ${{ env.RUST_TOOLCHAIN }}
+          target: ${{ matrix.target }}
+          args: --release --out dist
+          manylinux: auto
+      - name: Install on a clean interpreter and check the version
+        shell: bash
+        run: |
+          python -m venv clean
+          bin=clean/bin; [ -d clean/Scripts ] && bin=clean/Scripts
+          "$bin/pip" install dist/*.whl
+          "$bin/tfp" --version
+          "$bin/python" -c "import importlib.metadata as m, sys; v = m.version('tf-project'); print(v); sys.exit(v != sys.argv[1])" "${GITHUB_REF_NAME#v}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.target }}
+          path: dist/*.whl
+      - name: Pack the programs for download without pip
+        shell: bash
+        run: python bin/rust/archive.py dist/*.whl "${{ matrix.target }}" binaries
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.target }}
+          path: binaries/*
+
+  sdist:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - run: bin/rust/set-version.sh "${GITHUB_REF_NAME#v}"
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sdist
+          path: dist/*.tar.gz
+
+  publish:
+    needs: [wheels, sdist]
     runs-on: ubuntu-latest
     environment: release
     permissions:
-      id-token: write  # Required for PyPI OIDC trusted publishing + Sigstore
-      contents: write  # Required for creating GitHub Releases
+      id-token: write  # PyPI trusted publishing + Sigstore
+      contents: write  # the GitHub Release
     steps:
       - uses: actions/checkout@v6
+      # dist/ is what PyPI gets; the standalone downloads stay apart in binaries/.
+      - uses: actions/download-artifact@v4
         with:
-          fetch-depth: 0  # pdm-backend SCM versioning needs tag history
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
+          pattern: wheel-*
+          path: dist
+          merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          name: sdist
+          path: dist
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: binaries
+          merge-multiple: true
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.13"
-
-      - name: Install PDM
-        run: python -m pip install pdm
-
-      - name: Build packages
-        # Pin the version explicitly from the tag. Bypasses pdm-backend's
-        # SCM dirty-tree detection, which can append a PEP-440 local
-        # segment (e.g. `+d20260521`) that PyPI rejects with 400.
-        run: |
-          export PDM_BUILD_SCM_VERSION="${GITHUB_REF_NAME#v}"
-          pdm build
 
       - name: Sign artifacts with Sigstore
         uses: sigstore/gh-action-sigstore-python@v3.0.1
@@ -58,26 +115,19 @@ jobs:
           inputs: |
             ./dist/*.whl
             ./dist/*.tar.gz
+            ./binaries/*
 
       - name: Stash Sigstore bundles outside dist/
-        # `pypa/gh-action-pypi-publish` uploads everything in `dist/` and
-        # rejects `.sigstore.json` as an "unknown distribution format". Move
-        # the bundles to a sibling directory before publishing; the GitHub
-        # Release step picks them up from there.
+        # `pypa/gh-action-pypi-publish` uploads everything in `dist/` and rejects `.sigstore.json`.
         run: |
           mkdir -p signatures
-          mv dist/*.sigstore.json signatures/
+          mv dist/*.sigstore.json binaries/*.sigstore.json signatures/
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
       - name: Resolve version and prerelease flag
-        # Tag is `v1.2.1`; CHANGELOG entries are headed `## [1.2.1]`, so
-        # strip the `v` before handing the version to the reader action.
-        # Pre-release detection follows PEP 440 suffixes anchored at the end
-        # of the version (aN/bN/cN/rcN/alphaN/betaN/preN/previewN/.devN), so
-        # a tag like `v1.0.0-darwin` or `v1.2.3` isn't misclassified just
-        # because it happens to contain an `a` or `b`.
+        # PEP 440 pre-release suffixes anchored at the end of the version (aN/bN/rcN/.devN ...).
         id: ver
         run: |
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
@@ -101,12 +151,10 @@ jobs:
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
           body: ${{ steps.changelog.outputs.changes || format('Release {0}. See [CHANGELOG.md](CHANGELOG.md) for details.', github.ref_name) }}
-          # Tags like v1.2.3rc1, v1.2.3a1, v1.2.3.dev0 -> pre-release.
-          # Plain v1.2.3 -> stable. See the "Resolve version and prerelease
-          # flag" step above for the exact regex.
           prerelease: ${{ steps.ver.outputs.prerelease == 'true' }}
           files: |
             dist/*.whl
             dist/*.tar.gz
+            binaries/*
             signatures/*.sigstore.json
           fail_on_unmatched_files: true

@@ -254,6 +254,33 @@ fn secret_checks(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Vec
         .collect()
 }
 
+/// Is `tmp_dir` kept out of git? None when there's no `git`, or `tmp_dir` isn't inside a work tree.
+fn tmp_dir_ignored(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Option<DoctorCheck> {
+    let code = Command::new(found("git")?)
+        .arg("check-ignore")
+        .arg("-q")
+        // The trailing `/` lets a `tmp/` pattern match before the directory exists.
+        .arg(format!("{}/", config.tmp_dir.display()))
+        .current_dir(&config.project_root)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()
+        .and_then(|s| s.code());
+    let name = "tmp_dir git-ignored";
+    match code {
+        Some(0) => Some(check(name, true, config.tmp_dir.display().to_string())),
+        Some(1) => Some(check(
+            name,
+            false,
+            format!(
+                "add {} to .gitignore: saved plans and state snapshots hold secret values",
+                config.tmp_dir.display()
+            ),
+        )),
+        _ => None,
+    }
+}
+
 /// `tfp self doctor`: is everything tf-project needs in place? Programs are looked up on `path` (tfp's own `PATH`
 /// when none).
 #[must_use]
@@ -291,6 +318,7 @@ pub fn do_self_doctor(config: &Config, path: Option<&std::ffi::OsStr>) -> Vec<Do
             (false, false) => check(format!("{name} exists"), false, shown.to_string()),
         });
     }
+    checks.extend(tmp_dir_ignored(config, &found));
     checks.push(match slots::validate_unique(&slots::list_slots(config)) {
         Ok(()) => check("slot uniqueness", true, "all banners produce distinct slot names"),
         Err(e) => check("slot uniqueness", false, e.to_string()),

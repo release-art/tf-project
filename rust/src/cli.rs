@@ -1317,6 +1317,29 @@ secret_sources:
     }
 
     #[test]
+    fn doctor_checks_tmp_dir_is_git_ignored() {
+        let p = Project::new("");
+        let ignored = |p: &Project| {
+            crate::self_commands::do_self_doctor(&p.config(), None)
+                .into_iter()
+                .find(|c| c.name == "tmp_dir git-ignored")
+                .map(|c| c.ok)
+        };
+        assert_eq!(ignored(&p), None);
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&p.root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(ignored(&p), Some(false));
+        p.write(".gitignore", "tmp/\n");
+        assert_eq!(ignored(&p), Some(true));
+    }
+
+    #[test]
     fn doctor_checks_each_secret_scheme_in_use() {
         let p = Project::new("");
         let doctor = |p: &Project, path: &std::path::Path| {

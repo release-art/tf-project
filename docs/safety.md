@@ -3,8 +3,8 @@
 ## Applying only what you reviewed
 
 `tfp plan` saves the plan, along with a record of what it was made from: a
-fingerprint of the (filled-in) tfvars and of every `.tf` file in the project,
-and the banner's `project`, `state_key`, `backend_config` and `env`.
+fingerprint of the (filled-in) tfvars and of every `.tf` and `.tf.json` file
+under `terraform_dir` (so shared modules there count too), and the banner's `project`, `state_key`, `backend_config` and `env`.
 
 `tfp apply` applies that saved plan, and only if none of those have changed
 since. If someone edited a module, the tfvars or the banner in between, it

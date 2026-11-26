@@ -150,18 +150,24 @@ fn check_apply_plan(config: &Config, slot: &str) -> Result<()> {
     }
 }
 
-/// SHA-256 over the decrypted tfvars and every `.tf` under the project, so editing a module stales the plan too.
-fn plan_inputs_sha256(state: &MyState, decrypted: &[u8]) -> Result<String> {
+/// SHA-256 over the decrypted tfvars and every `.tf` / `.tf.json` under `terraform_dir`, so editing this project
+/// or a module it shares with others stales the plan. `.terraform/` directories are skipped.
+// ponytail: local modules outside terraform_dir aren't seen; read .terraform/modules/modules.json if that layout shows up.
+fn plan_inputs_sha256(terraform_dir: &Path, decrypted: &[u8]) -> Result<String> {
     let mut h = Sha256::new();
     h.update(b"tfvars:");
     h.update(decrypted);
-    let tf_files = walkdir::WalkDir::new(&state.source_root)
+    let tf_files = walkdir::WalkDir::new(terraform_dir)
         .sort_by_file_name()
         .into_iter()
+        .filter_entry(|e| e.file_name() != ".terraform")
         .filter_map(std::result::Result::ok)
-        .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "tf"));
+        .filter(|e| {
+            let name = e.file_name().to_string_lossy();
+            e.file_type().is_file() && (name.ends_with(".tf") || name.ends_with(".tf.json"))
+        });
     for entry in tf_files {
-        let rel = entry.path().strip_prefix(&state.source_root).unwrap_or(entry.path());
+        let rel = entry.path().strip_prefix(terraform_dir).unwrap_or(entry.path());
         h.update(b"\x00tf:");
         h.update(rel.display().to_string());
         h.update(b"\x00");
@@ -172,7 +178,7 @@ fn plan_inputs_sha256(state: &MyState, decrypted: &[u8]) -> Result<String> {
 
 fn write_tfplan_meta(config: &Config, state: &MyState, resolved: &ResolvedSlot, decrypted: &[u8]) -> Result<()> {
     let meta = TfplanMeta {
-        inputs_sha256: plan_inputs_sha256(state, decrypted)?,
+        inputs_sha256: plan_inputs_sha256(&config.terraform_dir, decrypted)?,
         project: resolved.project.clone(),
         state_key: resolved.backend_config.get("key").cloned(),
         backend_config: resolved.backend_config.clone(),
@@ -189,7 +195,7 @@ fn check_tfplan_fresh(config: &Config, ctx: &mut Ctx, active: &ActiveState, decr
         banner_present,
     } = active;
     let meta = TfplanMeta::load_file(&config.tfplan_meta(&state.slot))?;
-    let actual = plan_inputs_sha256(state, decrypted)?;
+    let actual = plan_inputs_sha256(&config.terraform_dir, decrypted)?;
     if meta.inputs_sha256 != actual {
         return Err(Error::Msg(format!(
             "Saved tfplan at {} was generated against different inputs (sha256 {}…) than the current tfvars + .tf \
@@ -444,6 +450,19 @@ pub fn do_init(config: &Config, ctx: &mut Ctx, extra: &[String]) -> Result<Resol
     Ok(resolved)
 }
 
+/// Saved plans and state snapshots hold secret values in plain text: only the owner may read `dir`. Windows
+/// directories already inherit the user's ACLs.
+#[cfg(unix)]
+fn make_private(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn make_private(_: &Path) -> std::io::Result<()> {
+    Ok(())
+}
+
 /// Initialise the slot when needed (always with `force_init`) and save its state.
 fn bind_slot(
     config: &Config,
@@ -454,7 +473,9 @@ fn bind_slot(
 ) -> Result<()> {
     let reason = init_reason(config, resolved).or(force_init.then_some("explicit re-init"));
     let first_init = !resolved.slot_dir.exists();
-    std::fs::create_dir_all(&resolved.slot_dir).map_err(io_error(&resolved.slot_dir))?;
+    std::fs::create_dir_all(&resolved.slot_dir)
+        .and_then(|()| make_private(&config.tmp_dir))
+        .map_err(io_error(&resolved.slot_dir))?;
     if let Some(cache) = &config.plugin_cache_dir {
         std::fs::create_dir_all(cache).map_err(io_error(cache))?;
     }
@@ -782,6 +803,14 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn use_makes_tmp_dir_private() {
+        use std::os::unix::fs::PermissionsExt;
+        let (_p, c) = bound("");
+        let mode = std::fs::metadata(&c.tmp_dir).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700);
+    }
+
+    #[test]
     fn use_inits_once_then_switches_warm() {
         let p = Project::new("");
         p.tfvars("dev", DEMO);
@@ -926,6 +955,17 @@ pub(crate) mod tests {
         assert!(apply_error(&p, &c, false).starts_with("Saved tfplan at "));
         do_apply(&c, &mut Streams::default().ctx(&p.root), true, &[]).unwrap();
 
+        // A shared module stales the plan; a stray `.terraform/` and other files don't.
+        let (p, c) = planned();
+        p.write("terraform/demo/.terraform/modules/x/main.tf", "cached\n");
+        p.write("terraform/demo/notes.md", "notes\n");
+        do_apply(&c, &mut Streams::default().ctx(&p.root), false, &[]).unwrap();
+        for module in ["terraform/modules/db/main.tf", "terraform/modules/db/vars.tf.json"] {
+            let (p, c) = planned();
+            p.write(module, "{}\n");
+            assert!(apply_error(&p, &c, false).starts_with("Saved tfplan at "));
+        }
+
         let (p, c) = planned();
         p.tfvars(
             "dev",
@@ -946,8 +986,8 @@ pub(crate) mod tests {
     /// Make the saved plan's input hash match the tfvars as they are now.
     fn resync_meta(p: &Project, c: &Config) {
         let mut meta = TfplanMeta::load_file(&c.tfplan_meta("dev")).unwrap();
-        let state = load_state(c, "dev").unwrap().unwrap();
-        meta.inputs_sha256 = plan_inputs_sha256(&state, &std::fs::read(p.path("tfvars/dev.tfvars")).unwrap()).unwrap();
+        meta.inputs_sha256 =
+            plan_inputs_sha256(&c.terraform_dir, &std::fs::read(p.path("tfvars/dev.tfvars")).unwrap()).unwrap();
         meta.dump_file(&c.tfplan_meta("dev")).unwrap();
     }
 

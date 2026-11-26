@@ -29,7 +29,7 @@ state_key_prefix = "terraform/azure/"   # see "Backend settings" below
 | --- | --- | --- |
 | `terraform_dir` | `terraform` | Where the Terraform projects are, one subdirectory each. |
 | `tfvars_dir` | `tfvars` | Where the tfvars files are. Subdirectories are searched too. |
-| `tmp_dir` | `tmp` | Slot directories, saved plans, snapshots and the provider cache. |
+| `tmp_dir` | `tmp` | Slot directories, saved plans, snapshots and the provider cache. Holds secret values: keep it out of git. |
 | `state_key_prefix` | none | Prefix for a backend `key` made from the tfvars file name. |
 | `terraform_binary` | `terraform` on `PATH` | The program to run: a name (`tofu`) looked up on `PATH`, or a path. |
 | `backend_config` | none | A table of `-backend-config` values for every slot. |

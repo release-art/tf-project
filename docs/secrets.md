@@ -44,6 +44,11 @@ When `tfp plan`, `apply`, `refresh`, `destroy` or `import` needs the tfvars:
 
 A tfvars file without references is used as it is.
 
+Terraform itself still writes the values into the saved plan and the state,
+so the saved plan and the state snapshots under `tmp_dir` hold them in plain
+text. tfp makes `tmp_dir` readable by you alone on macOS and Linux, and
+`tfp self doctor` fails if git doesn't ignore it.
+
 Values are inserted exactly as stored. A secret containing a newline is fine
 in a heredoc, but inside an ordinary `"…"` string a newline, `"` or `\` would
 break the HCL.

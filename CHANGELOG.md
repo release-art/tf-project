@@ -4,6 +4,19 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- `tfp apply` now also refuses a plan when a shared module changed: the
+  fingerprint covers every `.tf` and `.tf.json` under `terraform_dir`, not just
+  the project's own directory. `.terraform/` directories are skipped.
+- `tmp_dir` is made readable by its owner only (mode 0700 on macOS and Linux)
+  on each `tfp use` and `tfp init`: saved plans and state snapshots hold
+  secret values in plain text.
+
+### Added
+- `tfp self doctor` checks that git ignores `tmp_dir`.
+
 ## [0.3.3] - 2026-11-26
 
 ### Fixed

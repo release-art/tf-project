@@ -35,6 +35,13 @@ brew install release-art/tap/tf-project   # macOS, Linux
 pip install tf-project                     # or: uv tool install tf-project
 ```
 
+On Windows, with [Scoop](https://scoop.sh):
+
+```powershell
+scoop bucket add release-art https://github.com/release-art/scoop-bucket
+scoop install release-art/tf-project
+```
+
 Either way you get two names for the same program: `tf-project` and `tfp`.
 It's a single native executable for macOS (Apple Silicon, Intel), Linux
 (x86_64, arm64) and Windows (x86_64); with pip, Python is only the delivery

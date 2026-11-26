@@ -159,8 +159,8 @@ impl LockProvider {
         Ok(args)
     }
 
-    /// `--table-name <t> --key <LockID>`, and `--region <r>` when the region is known.
-    fn item_args(&self) -> Result<(Vec<String>, Vec<String>)> {
+    /// `--table-name <t> --key <LockID>`, then `--region <r>` when the region is known.
+    fn item_args(&self) -> Result<Vec<String>> {
         let hint = " Note: `tfp self lock` requires the DynamoDB-locking variant of the S3 backend.";
         let [table, bucket, key] = self.required(["dynamodb_table", "bucket", "key"], hint)?;
         let lock_id = json!({"LockID": {"S": format!("{bucket}/{key}")}}).to_string();
@@ -171,8 +171,9 @@ impl LockProvider {
             .get("region")
             .or_else(|| env.get("AWS_REGION"));
         let region = region.or_else(|| env.get("AWS_DEFAULT_REGION"));
-        let region_args = region.map_or_else(Vec::new, |r| vec!["--region".into(), r.clone()]);
-        Ok((vec!["--table-name".into(), table, "--key".into(), lock_id], region_args))
+        let mut args = vec!["--table-name".into(), table, "--key".into(), lock_id];
+        args.extend(region.map(|r| ["--region".to_owned(), r.clone()]).into_iter().flatten());
+        Ok(args)
     }
 
     /// The lock as the backend reports it.
@@ -203,13 +204,11 @@ impl LockProvider {
                 (locked, format!("lease_state={state}{duration}"), info)
             }
             Backend::S3 => {
-                let (item, region) = self.item_args()?;
                 let data = self.run(
                     [
                         strs(&["dynamodb", "get-item"]),
-                        item,
+                        self.item_args()?,
                         strs(&["--output", "json"]),
-                        region,
                     ]
                     .concat(),
                 )?;
@@ -234,10 +233,7 @@ impl LockProvider {
     pub fn break_lease(&self) -> Result<()> {
         match self.backend {
             Backend::Azure => self.run([strs(&["storage", "blob", "lease", "break"]), self.blob_args()?].concat()),
-            Backend::S3 => {
-                let (item, region) = self.item_args()?;
-                self.run([strs(&["dynamodb", "delete-item"]), item, region].concat())
-            }
+            Backend::S3 => self.run([strs(&["dynamodb", "delete-item"]), self.item_args()?].concat()),
         }
         .map(drop)
     }
@@ -383,7 +379,7 @@ mod tests {
         assert_eq!(
             calls(&p),
             [
-                format!("dynamodb get-item --table-name t --key {key} --output json --region eu-west-1"),
+                format!("dynamodb get-item --table-name t --key {key} --region eu-west-1 --output json"),
                 format!("dynamodb delete-item --table-name t --key {key} --region eu-west-1"),
             ]
         );

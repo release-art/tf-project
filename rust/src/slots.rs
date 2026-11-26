@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::banner::{find_banner, resolve_backend_config, resolve_slot_name};
+use crate::banner::{SlotName, find_banner, resolve_backend_config, resolve_slot_name};
 use crate::config::Config;
 use crate::models::Banner;
 use crate::state::read_active;
@@ -86,7 +86,10 @@ pub struct ActiveSlot {
 /// # Errors
 /// The banner's `state_key` is malformed.
 pub fn resolve_slot_from_banner(banner: &Banner, tfvars: &Path, config: &Config) -> Result<ResolvedSlot> {
-    let (name, name_is_explicit) = resolve_slot_name(banner, tfvars);
+    let SlotName {
+        name,
+        explicit: name_is_explicit,
+    } = resolve_slot_name(banner, tfvars);
     Ok(ResolvedSlot {
         name_is_explicit,
         tfvars: resolve(tfvars),

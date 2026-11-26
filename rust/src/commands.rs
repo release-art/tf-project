@@ -71,13 +71,28 @@ pub fn require_slot_state(config: &Config, slot: &str) -> Result<MyState> {
     )))
 }
 
-/// The active slot from its live banner, its saved state, and whether the banner is still there. Without the banner,
-/// the slot is rebuilt from the saved state.
-fn resolve_active_slot(config: &Config, ctx: &Ctx) -> Result<(ResolvedSlot, MyState, bool)> {
+/// The active slot, as a wrapped command needs it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ActiveState {
+    /// The slot from its live banner; rebuilt from `state` when the banner is gone.
+    resolved: ResolvedSlot,
+    /// What `tfp use` saved.
+    state: MyState,
+    /// Whether `resolved` came from a live banner.
+    banner_present: bool,
+}
+
+/// The active slot from its live banner, and its saved state. Without the banner, the slot is rebuilt from the saved
+/// state.
+fn resolve_active_slot(config: &Config, ctx: &Ctx) -> Result<ActiveState> {
     let active = require_active(config, ctx)?;
     let state = require_slot_state(config, &active.name)?;
     match slots::resolve_slot(&active.name, config, &ctx.cwd) {
-        Ok(resolved) => Ok((resolved, state, true)),
+        Ok(resolved) => Ok(ActiveState {
+            resolved,
+            state,
+            banner_present: true,
+        }),
         Err(Error::Slot(_)) => {
             let resolved = ResolvedSlot {
                 name: state.slot.clone(),
@@ -89,7 +104,11 @@ fn resolve_active_slot(config: &Config, ctx: &Ctx) -> Result<(ResolvedSlot, MySt
                 backend_config: state.backend_config.clone(),
                 slot_dir: config.slot_dir(&state.slot),
             };
-            Ok((resolved, state, false))
+            Ok(ActiveState {
+                resolved,
+                state,
+                banner_present: false,
+            })
         }
         Err(e) => Err(e),
     }
@@ -163,12 +182,12 @@ fn write_tfplan_meta(config: &Config, state: &MyState, resolved: &ResolvedSlot, 
 }
 
 /// Refuse a saved plan made from other inputs or another banner.
-fn check_tfplan_fresh(
-    config: &Config,
-    ctx: &mut Ctx,
-    (resolved, state, banner_present): (&ResolvedSlot, &MyState, bool),
-    decrypted: &Path,
-) -> Result<()> {
+fn check_tfplan_fresh(config: &Config, ctx: &mut Ctx, active: &ActiveState, decrypted: &Path) -> Result<()> {
+    let ActiveState {
+        resolved,
+        state,
+        banner_present,
+    } = active;
     let meta = TfplanMeta::load_file(&config.tfplan_meta(&state.slot))?;
     let actual = plan_inputs_sha256(state, decrypted)?;
     if meta.inputs_sha256 != actual {
@@ -182,7 +201,7 @@ fn check_tfplan_fresh(
     }
     // Without the banner, `resolved` comes from the same saved state the plan was made from: comparing would prove
     // nothing, so say so instead of pretending.
-    if !banner_present {
+    if !*banner_present {
         say!(
             ctx.err,
             "warning: tfvars banner for slot {:?} is missing; skipping banner-drift check on apply. \
@@ -513,7 +532,7 @@ pub fn do_rm(config: &Config, ctx: &Ctx, name: &str, force: bool) -> Result<std:
 /// # Errors
 /// No usable active slot, or Terraform fails.
 pub fn do_plan(config: &Config, ctx: &mut Ctx, flags: &Flags) -> Result<()> {
-    let (resolved, state, _) = resolve_active_slot(config, ctx)?;
+    let ActiveState { resolved, state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
     let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
     let var_file = decrypted.path().display().to_string();
@@ -530,19 +549,20 @@ pub fn do_plan(config: &Config, ctx: &mut Ctx, flags: &Flags) -> Result<()> {
 /// # Errors
 /// No saved plan, a stale one, another apply running, or Terraform fails.
 pub fn do_apply(config: &Config, ctx: &mut Ctx, force: bool, extra: &[String]) -> Result<()> {
-    let (resolved, state, banner_present) = resolve_active_slot(config, ctx)?;
+    let active = resolve_active_slot(config, ctx)?;
+    let state = &active.state;
     check_data_dir(config, &state.slot)?;
     check_apply_plan(config, &state.slot)?;
     let _lock = try_exclusive_lock(&config.apply_lock(&state.slot))?;
     let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
     if !force {
-        check_tfplan_fresh(config, ctx, (&resolved, &state, banner_present), decrypted.path())?;
+        check_tfplan_fresh(config, ctx, &active, decrypted.path())?;
     }
     let var_file = decrypted.path().display().to_string();
     terraform::run(
         ctx,
-        &build_apply_argv(config, &state, &var_file, extra),
-        &env_for_slot(config, &state),
+        &build_apply_argv(config, state, &var_file, extra),
+        &env_for_slot(config, state),
     )?;
     let _ = std::fs::remove_file(config.tfplan_file(&state.slot));
     let _ = std::fs::remove_file(config.tfplan_meta(&state.slot));
@@ -554,7 +574,7 @@ pub fn do_apply(config: &Config, ctx: &mut Ctx, force: bool, extra: &[String]) -
 /// # Errors
 /// No usable active slot, another apply running, or Terraform fails.
 pub fn do_targeted(config: &Config, ctx: &mut Ctx, subcommand: &str, flags: &Flags) -> Result<()> {
-    let (_, state, _) = resolve_active_slot(config, ctx)?;
+    let ActiveState { state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
     let _lock = try_exclusive_lock(&config.apply_lock(&state.slot))?;
     let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
@@ -593,7 +613,7 @@ pub fn do_fmt(config: &Config, ctx: &mut Ctx, extra: &[String]) -> Result<()> {
 /// # Errors
 /// No usable active slot, or Terraform fails.
 pub fn do_output(config: &Config, ctx: &mut Ctx, extra: &[String]) -> Result<()> {
-    let (_, state, _) = resolve_active_slot(config, ctx)?;
+    let ActiveState { state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
     terraform::run(
         ctx,
@@ -607,7 +627,7 @@ pub fn do_output(config: &Config, ctx: &mut Ctx, extra: &[String]) -> Result<()>
 /// # Errors
 /// No usable active slot, the snapshot fails, or Terraform fails.
 pub fn do_import(config: &Config, ctx: &mut Ctx, address: &str, id: &str, extra: &[String]) -> Result<()> {
-    let (_, state, _) = resolve_active_slot(config, ctx)?;
+    let ActiveState { state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
     crate::self_commands::auto_snapshot(config, &state, "import")?;
     let decrypted = materialize(&config.secrets_command, &state.tfvars, &ctx.temp_dir)?;
@@ -621,7 +641,7 @@ pub fn do_import(config: &Config, ctx: &mut Ctx, address: &str, id: &str, extra:
 /// # Errors
 /// No usable active slot, the snapshot fails, or Terraform fails.
 pub fn do_state(config: &Config, ctx: &mut Ctx, subcommand: &str, args: &[String], extra: &[String]) -> Result<()> {
-    let (_, state, _) = resolve_active_slot(config, ctx)?;
+    let ActiveState { state, .. } = resolve_active_slot(config, ctx)?;
     check_data_dir(config, &state.slot)?;
     if matches!(subcommand, "rm" | "mv" | "replace-provider") {
         crate::self_commands::auto_snapshot(config, &state, &format!("state-{subcommand}"))?;

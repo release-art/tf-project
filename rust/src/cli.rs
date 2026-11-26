@@ -350,7 +350,7 @@ pub fn main() -> ExitCode {
 
 /// Run the command line `args` (the program name first) and return the exit code.
 pub fn run(args: Vec<String>, ctx: &mut Ctx) -> i32 {
-    let (args, verbose, dry_run) = strip_global_flags(args);
+    let GlobalFlags { args, verbose, dry_run } = strip_global_flags(args);
     let name = program_name(&args);
     let command = Cli::command().bin_name(name);
     let parsed = command
@@ -421,8 +421,19 @@ fn program_name(args: &[String]) -> String {
     crate::banner::stem(std::path::Path::new(args.first().map_or("tf-project", String::as_str)))
 }
 
+/// The command line without `--verbose` and `--dry-run`, and whether each was there.
+#[derive(Debug, PartialEq, Eq)]
+struct GlobalFlags {
+    /// The rest of the command line.
+    args: Vec<String>,
+    /// `--verbose`.
+    verbose: bool,
+    /// `--dry-run`.
+    dry_run: bool,
+}
+
 /// Take `--verbose` and `--dry-run` out of `args`, wherever they are before a `--`.
-fn strip_global_flags(args: Vec<String>) -> (Vec<String>, bool, bool) {
+fn strip_global_flags(args: Vec<String>) -> GlobalFlags {
     let (mut verbose, mut dry_run, mut seen_dash_dash) = (false, false, false);
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
@@ -440,7 +451,11 @@ fn strip_global_flags(args: Vec<String>) -> (Vec<String>, bool, bool) {
         }
         out.push(arg);
     }
-    (out, verbose, dry_run)
+    GlobalFlags {
+        args: out,
+        verbose,
+        dry_run,
+    }
 }
 
 /// Let Terraform's own flags sit anywhere after a wrapped command, as they would on `terraform`'s command line: the
@@ -810,7 +825,7 @@ fn lock(config: &Config, ctx: &mut Ctx, command: LockCmd) -> Result<i32> {
 mod tests {
     use pretty_assertions::assert_eq;
 
-    use super::{normalize, run, strip_global_flags};
+    use super::{GlobalFlags, normalize, run, strip_global_flags};
     use crate::commands::tests::{DEMO, bound};
     use crate::testing::{Project, Streams};
 
@@ -833,10 +848,14 @@ mod tests {
 
     #[test]
     fn global_flags_anywhere_before_dash_dash() {
-        let (args, verbose, dry_run) = strip_global_flags(strings(&["tfp", "plan", "--verbose", "--", "--dry-run"]));
+        let flags = strip_global_flags(strings(&["tfp", "plan", "--verbose", "--", "--dry-run"]));
         assert_eq!(
-            (args, verbose, dry_run),
-            (strings(&["tfp", "plan", "--", "--dry-run"]), true, false)
+            flags,
+            GlobalFlags {
+                args: strings(&["tfp", "plan", "--", "--dry-run"]),
+                verbose: true,
+                dry_run: false
+            }
         );
     }
 

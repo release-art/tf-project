@@ -97,13 +97,28 @@ fn normalize_state_key(state_key: &str, tfvars: &Path) -> Result<String> {
     Ok(key.to_owned())
 }
 
-/// The slot name, and whether the banner chose it; the tfvars file's stem otherwise.
+/// A slot's name, and where it came from.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotName {
+    /// The name.
+    pub name: String,
+    /// Whether the banner chose it; otherwise it is the tfvars file's stem.
+    pub explicit: bool,
+}
+
+/// The banner's `slot`, or the tfvars file's stem.
 #[must_use]
-pub fn resolve_slot_name(banner: &Banner, tfvars: &Path) -> (String, bool) {
-    banner
-        .slot
-        .as_ref()
-        .map_or_else(|| (stem(tfvars), false), |s| (s.clone(), true))
+pub fn resolve_slot_name(banner: &Banner, tfvars: &Path) -> SlotName {
+    match &banner.slot {
+        Some(name) => SlotName {
+            name: name.clone(),
+            explicit: true,
+        },
+        None => SlotName {
+            name: stem(tfvars),
+            explicit: false,
+        },
+    }
 }
 
 /// The file name without its last extension.
@@ -117,12 +132,12 @@ pub fn stem(path: &Path) -> String {
 /// # Errors
 /// As [`resolve_backend_config`].
 pub fn render_summary(banner: &Banner, tfvars: &Path, config: &Config) -> Result<Value> {
-    let (slot, explicit) = resolve_slot_name(banner, tfvars);
+    let slot = resolve_slot_name(banner, tfvars);
     Ok(json!({
         "tfvars": tfvars.display().to_string(),
         "project": banner.project,
-        "slot": slot,
-        "slot_is_explicit": explicit,
+        "slot": slot.name,
+        "slot_is_explicit": slot.explicit,
         "source_root": config.terraform_dir.join(&banner.project).display().to_string(),
         "backend_config": resolve_backend_config(banner, tfvars, config)?,
         "env": banner.env,

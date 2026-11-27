@@ -3,8 +3,15 @@
 ## Applying only what you reviewed
 
 `tfp plan` saves the plan, along with a record of what it was made from: a
-fingerprint of the (filled-in) tfvars and of every `.tf` and `.tf.json` file
-under `terraform_dir` (so shared modules there count too), and the banner's `project`, `state_key`, `backend_config` and `env`.
+fingerprint of the (filled-in) tfvars; of every `.tf`, `.tf.json`, `.tofu`
+and `.tofu.json` file under `terraform_dir` (so shared modules there count
+too); of the variable files Terraform loads by itself (`terraform.tfvars`,
+`terraform.tfvars.json`, `*.auto.tfvars`, `*.auto.tfvars.json`); and the
+banner's `project`, `state_key`, `backend_config` and `env`.
+
+`.terraform.lock.hcl` isn't part of it: `tfp use` on another slot of the same
+project rewrites it, which would make every other slot's plan look stale, and
+Terraform already checks the providers against the saved plan.
 
 `tfp apply` applies that saved plan, and only if none of those have changed
 since. If someone edited a module, the tfvars or the banner in between, it
@@ -13,6 +20,52 @@ successful apply the saved plan is deleted, so it can't be applied twice.
 
 Only one `apply`, `refresh` or `destroy` runs per slot at a time; a second one
 stops with "Lock held by another process".
+
+## Protected slots
+
+The active slot is shared by every shell, so a `tfp destroy` meant for `dev`
+can land on `prod` if another terminal ran `tfp use prod` in between. And
+`tfp apply` applies the saved plan without asking: Terraform doesn't prompt
+for saved plans. Mark the environments where that would hurt:
+
+```hcl
+# {"header": "terraform", "project": "api", "protected": true}
+```
+
+Then `tfp apply`, `refresh`, `destroy`, `import`, `state mv`, `state rm`,
+`state push`, `state replace-provider` and `tfp self snapshot restore` ask you
+to type the slot's name before they run:
+
+```text
+slot "prod" is protected. Type its name to run `tfp apply`:
+```
+
+For `tfp apply` (with or without `--force`), tfp first reads the saved plan
+with `terraform show -json` and says what it will do, naming everything it
+destroys or replaces:
+
+```text
+slot "prod" is protected. This plan adds 3, changes 1, destroys 1, replaces 1:
+  - azurerm_storage_account.logs   (destroy)
+  - azurerm_postgresql_flexible_server.db   (replace)
+Type its name to run `tfp apply`:
+```
+
+If `terraform show` fails, tfp says the summary is unavailable and asks
+anyway. Unprotected slots apply as before, with Terraform's own output.
+
+Anything else aborts. `-y` and `--force` don't skip this, and `--dry-run`
+doesn't ask, since it runs nothing. Commands that only read (`plan`, `output`,
+`state list`, `ls`, `status`, ...) are unchanged. `tfp tf ...` passes
+commands to Terraform untouched and isn't guarded.
+
+With no terminal to type at (CI, a pipe), tfp refuses unless `TFP_CONFIRM`
+holds the slot's name: `TFP_CONFIRM=prod tfp apply`. A `TFP_CONFIRM` naming
+another slot is refused too. At a terminal `TFP_CONFIRM` is ignored, so one
+left exported in a shell doesn't silently unprotect it.
+
+`tfp ls`, `tfp status` and `tfp self banner check` show which slots are
+protected.
 
 ## State snapshots
 
@@ -36,6 +89,26 @@ undoing a change, but double-check you're on the right slot first.
 tfp keeps the newest 200 snapshots per slot. Change that with
 `snapshot_retention` in `tf_project.toml`; `0` turns automatic snapshots off
 (`tfp self snapshot create` still works).
+
+## Signed in to the right Azure tenant
+
+Before `apply`, `refresh`, `destroy`, `import`, the state-changing `state`
+commands and `tfp self snapshot restore`, tfp asks the Azure CLI who is signed
+in (`az account show`) for slots that look like Azure ones: the banner's `env`
+sets an `ARM_*` variable, or the backend is azurerm. It only checks; it never
+switches accounts.
+
+- If the banner sets `ARM_TENANT_ID` and az is signed in to another tenant,
+  tfp stops before running Terraform and tells you which `az login --tenant`
+  to run.
+- If the banner sets no `ARM_SUBSCRIPTION_ID`, tfp warns that Terraform will
+  use az's default subscription, and names it. Pin the subscription in the
+  banner's `env` to remove that risk.
+- If no one is signed in, tfp stops and asks you to run `az login`.
+
+Nothing is checked for `plan` and read-only commands, with `--dry-run`, or when
+`az` isn't installed. `tfp self doctor` runs the same check for every Azure slot
+and also reports a missing `az`.
 
 ## A stuck state lock
 

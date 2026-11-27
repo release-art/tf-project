@@ -73,13 +73,19 @@ fn strs(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// Whether `backend_config` is for the azurerm backend.
+#[must_use]
+pub fn is_azurerm(backend_config: &std::collections::BTreeMap<String, String>) -> bool {
+    backend_config.contains_key("storage_account_name") && backend_config.contains_key("container_name")
+}
+
 /// The provider for the slot's backend.
 ///
 /// # Errors
 /// The saved backend configuration is not azurerm, nor S3 with a DynamoDB table.
 pub fn select_provider(state: &MyState) -> Result<LockProvider> {
     let bc = &state.backend_config;
-    let (backend, program) = if bc.contains_key("storage_account_name") && bc.contains_key("container_name") {
+    let (backend, program) = if is_azurerm(bc) {
         (Backend::Azure, "az")
     } else if bc.contains_key("dynamodb_table") && bc.contains_key("bucket") {
         (Backend::S3, "aws")

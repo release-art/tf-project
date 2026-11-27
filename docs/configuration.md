@@ -73,10 +73,16 @@ instance_count = 2
 | `backend_config` | no | More `-backend-config` values for this environment. |
 | `env` | no | Environment variables for Terraform, e.g. `ARM_SUBSCRIPTION_ID`. |
 | `secrets_config` | no | Settings for secret sources; see [Secrets](secrets.md). |
+| `protected` | no | `true` makes commands that change this slot ask for its name first; see [Safety and recovery](safety.md#protected-slots). |
 
 Unknown fields don't stop anything, so older and newer versions of tfp can
 share files. `tfp self banner check <file>` lists any it doesn't recognise,
 and shows what the banner resolves to.
+
+A `*.tfvars` file under `tfvars_dir` without a valid banner defines no slot.
+`tfp use`, `tfp init` and `tfp ls` warn about each one, with the reason (no
+banner, or what is wrong with it); `tfp ls --json` lists them under
+`skipped`, and `tfp self doctor` fails its "tfvars without a banner" check.
 
 ### Slot names
 
@@ -103,6 +109,14 @@ it starts with `/` and has no `.`, `..`, `//`, trailing `/` or backslashes. tfp
 drops the leading `/` before passing it on, because the azurerm backend adds
 the container name in front. Use `state_key` when two tfvars files should
 share one state, or when the default key doesn't fit.
+
+Two slots with exactly the same backend settings (`key`, container, bucket
+and so on) share one remote state. When that happens because of the default
+key, for example `tfvars/eu/dev.tfvars` and `tfvars/us/dev.tfvars` both
+becoming `<state_key_prefix>dev.tfstate`, `tfp use` and `tfp init` refuse
+and name both files; give one of them its own `state_key`. When both banners
+set the same `state_key`, sharing is on purpose: it's allowed, and
+`tfp self doctor` notes which slots share state.
 
 After editing a banner's `state_key` or `backend_config`, run `tfp init` to
 re-bind the slot to the new backend.

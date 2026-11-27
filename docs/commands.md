@@ -20,8 +20,8 @@ tfp -s staging plan      # staging for this one command
 | --- | --- |
 | `tfp use <slot>` | Make `<slot>` active. A tfvars path works too. Runs `terraform init` only when the slot has never been initialised or its backend settings changed. |
 | `tfp init` | Re-read the active slot's banner and re-initialise its backend (`terraform init -reconfigure`). Run it after editing `state_key` or `backend_config`. |
-| `tfp ls` | List slots, their tfvars file and backend key, and when each was last initialised. `--json` for scripts. |
-| `tfp status` | The active slot, its files, backend key, environment variables and whether a plan is waiting. |
+| `tfp ls` | List slots, their tfvars file and backend key, and when each was last initialised; protected slots are marked. `--json` for scripts. |
+| `tfp status` | The active slot, its files, backend key, environment variables, whether a plan is waiting and whether the slot is protected. |
 | `tfp last` | The last Terraform command run in the active slot, and its exit code. |
 | `tfp rm <slot>` | Delete a slot's working directory (not its tfvars file). The active slot needs `--force`. |
 
@@ -36,6 +36,7 @@ tfp -s staging plan      # staging for this one command
 | `tfp output` | `terraform output -json`. |
 | `tfp import <address> <id>` | Import a resource, after snapshotting the remote state. |
 | `tfp state list \| show \| mv \| rm \| pull \| push \| replace-provider \| identities` | Terraform's state commands. `mv`, `rm` and `replace-provider` snapshot the remote state first. |
+| `tfp drift` | Check every slot for drift; see [below](#checking-every-slot-for-drift). `--json` for scripts. |
 | `tfp fmt` | `terraform fmt -recursive` over the Terraform and tfvars directories. |
 | `tfp tf <args>` | Any other Terraform command, run in the active slot: `tfp tf validate`, `tfp tf providers`, `tfp tf force-unlock <id>`. Without an active slot, it runs Terraform as is. |
 
@@ -52,6 +53,29 @@ tfp apply -- -parallelism=20
 
 Only the commands above are wrapped. A Terraform command tfp doesn't know,
 like `tfp validate`, is an error rather than a guess: use `tfp tf validate`.
+
+## Checking every slot for drift
+
+`tfp drift` runs `terraform plan -detailed-exitcode -lock=false -input=false`
+in each slot in turn, with its own tfvars (secrets filled in), environment and
+`.terraform/`, then prints a summary:
+
+```text
+SLOT  RESULT
+dev   clean
+prod  skipped: protected
+qa    drift
+```
+
+It saves no plan, so each slot's saved plan for `tfp apply` stays as it was,
+and it doesn't change the active slot. Protected slots are skipped, and so
+are slots that were never initialised (run `tfp use <slot>` first; drift
+doesn't initialise anything).
+
+It exits 0 when every slot it checked is clean, 2 when any drifted, and 1
+when any check failed. Skipped slots don't count. `--json` prints the summary
+as a list of `{"slot", "result", "reason"}` objects, `result` being `clean`,
+`drift`, `error` or `skipped`; Terraform's own output then goes to stderr.
 
 ## Flags for any command
 
@@ -71,7 +95,7 @@ like `tfp validate`, is an error rather than a guess: use `tfp tf validate`.
 | `tfp self init` | Write a starter `tf_project.toml`, or a `[tool.tf_project]` table in `pyproject.toml`. |
 | `tfp self config print` | The settings in effect (`--json` for scripts). |
 | `tfp self config path` | Which file the settings come from. |
-| `tfp self doctor` | Check Terraform, secret tools, directories, slot names and stray slot directories. |
+| `tfp self doctor` | Check Terraform, secret tools, directories, banners, slot names, shared state keys, the Azure sign-in, that git ignores `tmp_dir`, and stray slot directories. |
 | `tfp self banner check <tfvars>` | Validate a banner and show what it resolves to. |
 | `tfp self trace <command>` | The Terraform command line `tfp <command>` would run, without running it. |
 | `tfp self state show` / `clear` | Show or delete what `tfp use` saved about the active slot (`--all` for every slot). |

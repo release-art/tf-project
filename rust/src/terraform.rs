@@ -21,6 +21,8 @@ pub struct Options {
     pub verbose: bool,
     /// Where to record the invocation for `tfp last`; nowhere when no slot is active.
     pub last_invocation: Option<PathBuf>,
+    /// Send Terraform's standard output to standard error, keeping tfp's own output (JSON) clean.
+    pub stdout_to_stderr: bool,
 }
 
 /// Run `cmd` with `env` on top of tfp's environment and wait for it. Ctrl-C reaches Terraform, which stops cleanly;
@@ -39,7 +41,12 @@ pub fn run(ctx: &mut Ctx, cmd: &[String], env: &Env) -> Result<()> {
     if ctx.terraform.dry_run {
         return Ok(());
     }
-    let code = match Command::new(program).args(args).envs(env).status() {
+    let mut command = Command::new(program);
+    command.args(args).envs(env);
+    if ctx.terraform.stdout_to_stderr {
+        command.stdout(std::io::stderr());
+    }
+    let code = match command.status() {
         Ok(status) => exit_code(status),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             say!(ctx.err, "{program}: command not found");

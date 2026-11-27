@@ -4,18 +4,43 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-11-27
 
 ### Fixed
 - `tfp apply` now also refuses a plan when a shared module changed: the
   fingerprint covers every `.tf` and `.tf.json` under `terraform_dir`, not just
   the project's own directory. `.terraform/` directories are skipped.
+- The plan fingerprint also covers OpenTofu sources (`.tofu`, `.tofu.json`)
+  and the variable files Terraform loads by itself (`terraform.tfvars`,
+  `terraform.tfvars.json`, `*.auto.tfvars`, `*.auto.tfvars.json`).
 - `tmp_dir` is made readable by its owner only (mode 0700 on macOS and Linux)
   on each `tfp use` and `tfp init`: saved plans and state snapshots hold
   secret values in plain text.
 
 ### Added
 - `tfp self doctor` checks that git ignores `tmp_dir`.
+- **Protected slots.** `"protected": true` in a banner makes `apply`,
+  `refresh`, `destroy`, `import`, the state-changing `state` commands and
+  `self snapshot restore` ask for the slot's name before running. `-y` and
+  `--force` don't skip it. Without a terminal, `TFP_CONFIRM=<slot>` must name
+  the slot. `tfp ls`, `tfp status` and `tfp self banner check` show it.
+  Before a protected `tfp apply` asks, it lists what the saved plan adds,
+  changes, destroys and replaces, naming each resource destroyed or replaced.
+- `tfp use` and `tfp init` refuse two slots whose backend settings are the
+  same because of the default key (two `dev.tfvars` in different folders,
+  say). Slots that both set the same `state_key` may still share state on
+  purpose; `tfp self doctor` notes them.
+- `tfp use`, `tfp init` and `tfp ls` warn about `*.tfvars` files that define
+  no slot (no banner, or a broken one), `tfp ls --json` lists them under
+  `skipped`, and `tfp self doctor` fails its new "tfvars without a banner"
+  check.
+- `tfp drift` plans every initialised, unprotected slot with
+  `-detailed-exitcode`, saving nothing, and prints which drifted (`--json`
+  for scripts). Exits 0 when all are clean, 2 on drift, 1 on errors.
+- Before changing an Azure slot (`ARM_*` in the banner's `env`, or an azurerm
+  backend), tfp checks `az account show`: a different `ARM_TENANT_ID` stops it,
+  and a missing `ARM_SUBSCRIPTION_ID` gets a warning naming the subscription
+  Terraform will fall back to. `tfp self doctor` checks the same.
 
 ## [0.3.3] - 2026-11-26
 

@@ -19,12 +19,17 @@ What you get:
   pointer change, with no re-init.
 - **Safer applies.** `tfp apply` only applies the plan you just reviewed, and
   refuses if the tfvars, the `.tf` sources or the backend changed since.
+- **Protected environments.** Mark `prod` as protected and every command that
+  changes it asks you to type its name first, after showing what the plan
+  destroys or replaces.
 - **A safety net for state surgery.** `tfp state rm`, `mv` and `import`
   snapshot the remote state first, and `tfp self snapshot restore` puts it
   back.
 - **Secrets out of git.** Tfvars can hold references like
   `{{ op://Infra/db/password }}` or `{{ az-kv://my-vault/secrets/db-password }}`; tfp
   fills them in from 1Password or Azure Key Vault at run time.
+- **Drift checks.** `tfp drift` plans every environment and reports which
+  ones no longer match their code.
 - **Help when things go wrong.** `tfp self doctor` checks your setup, and
   `tfp self lock break` clears a stuck Azure or S3 state lock.
 
@@ -101,6 +106,7 @@ and the directories are where tfp expects them.
 | `tfp status` | Show the active slot and whether a plan is waiting. |
 | `tfp plan` / `tfp apply` | Plan and save; apply the saved plan. `-t <address>` targets. |
 | `tfp state …` / `tfp import …` | Terraform's state commands, with a snapshot first. |
+| `tfp drift` | Plan every slot without saving, and report which ones drifted. |
 | `tfp tf <anything>` | Any other Terraform command, run in the active slot. |
 | `tfp -s prod plan` | Run one command against another slot without switching. |
 | `tfp --dry-run …` | Show the Terraform command line instead of running it. |

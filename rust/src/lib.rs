@@ -9,6 +9,7 @@ pub mod banner;
 pub mod cli;
 pub mod commands;
 pub mod config;
+pub mod identity;
 pub mod lock;
 pub mod models;
 pub mod secrets;
@@ -79,6 +80,10 @@ pub struct Ctx<'a> {
     pub slot_flag: Option<String>,
     /// `TFP_SLOT`.
     pub slot_env: Option<String>,
+    /// `TFP_CONFIRM`: the protected slot a run with no terminal may change.
+    pub confirm_env: Option<String>,
+    /// Whether stdin is a terminal someone can type a confirmation at.
+    pub interactive: bool,
     /// How Terraform is run.
     pub terraform: terraform::Options,
     /// `PATH` for the cloud CLIs tfp starts; tfp's own when none.
@@ -213,6 +218,8 @@ pub(crate) mod testing {
                 cwd: cwd.to_path_buf(),
                 slot_flag: None,
                 slot_env: None,
+                confirm_env: None,
+                interactive: false,
                 terraform: terraform::Options::default(),
                 search_path: None,
                 temp_dir: std::env::temp_dir(),

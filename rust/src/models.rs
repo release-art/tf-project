@@ -237,6 +237,9 @@ pub struct Banner {
     /// `-backend-config` key/values.
     #[serde(default)]
     pub backend_config: BTreeMap<String, String>,
+    /// Mutating commands need the slot's name typed (or `TFP_CONFIRM`) before they run.
+    #[serde(default)]
+    pub protected: bool,
     /// Settings for each secret source, by URI scheme: `{"az-kv": {"tenant": "…"}}`.
     #[serde(default)]
     pub secrets_config: BTreeMap<String, BTreeMap<String, String>>,

@@ -28,19 +28,22 @@ pub fn find_banner(tfvars: &Path) -> Result<Banner> {
 /// # Errors
 /// There is no banner, or it is malformed.
 pub fn parse_banner(text: &str, tfvars: &Path) -> Result<Banner> {
-    for line in text.lines().filter(|l| l.starts_with('#')) {
-        let Ok(data) = serde_json::from_str::<Value>(line.trim_start_matches('#').trim()) else {
-            continue;
-        };
-        if data.get("header").and_then(Value::as_str) == Some("terraform") {
-            return serde_json::from_value(data).map_err(|e| banner_error(tfvars, &e.to_string()));
-        }
+    if let Some(banner) = banner_in(text) {
+        return banner.map_err(|e| banner_error(tfvars, &e.to_string()));
     }
     Err(Error::Msg(format!(
-        "Project info banner not found in {}. \
-         Expected a comment line like `# {{\"header\": \"terraform\", \"project\": \"<name>\"}}`.",
+        "No banner in {}. Add a comment line like `# {{\"header\": \"terraform\", \"project\": \"<name>\"}}`.",
         tfvars.display()
     )))
+}
+
+/// The banner in `text`, parsed; none when no comment line is a banner.
+pub fn banner_in(text: &str) -> Option<serde_json::Result<Banner>> {
+    text.lines()
+        .filter(|l| l.starts_with('#'))
+        .filter_map(|line| serde_json::from_str::<Value>(line.trim_start_matches('#').trim()).ok())
+        .find(|data| data.get("header").and_then(Value::as_str) == Some("terraform"))
+        .map(serde_json::from_value)
 }
 
 fn banner_error(tfvars: &Path, message: &str) -> Error {
@@ -148,6 +151,7 @@ pub fn render_summary(banner: &Banner, tfvars: &Path, config: &Config) -> Result
         "source_root": config.terraform_dir.join(&banner.project).display().to_string(),
         "backend_config": resolve_backend_config(banner, tfvars, config)?,
         "env": banner.env,
+        "protected": banner.protected,
     }))
 }
 
@@ -182,12 +186,7 @@ mod tests {
     fn missing_and_malformed_banners() {
         let p = Project::new("");
         let none = p.write("tfvars/a.tfvars", "x = 1\n");
-        assert!(
-            find_banner(&none)
-                .unwrap_err()
-                .to_string()
-                .starts_with("Project info banner not found in ")
-        );
+        assert!(find_banner(&none).unwrap_err().to_string().starts_with("No banner in "));
         let bad = p.tfvars("b", r#"{"header":"terraform"}"#);
         let m = find_banner(&bad).unwrap_err().to_string();
         assert!(
@@ -247,6 +246,7 @@ mod tests {
         assert_eq!(summary["slot"], "main");
         assert_eq!(summary["slot_is_explicit"], true);
         assert_eq!(summary["env"], json!({"A": "1"}));
+        assert_eq!(summary["protected"], false);
         assert_eq!(summary["source_root"], p.path("terraform/demo").display().to_string());
         let bad = p.tfvars("qa", r#"{"header":"terraform","project":"demo","state_key":"x"}"#);
         assert!(render_summary(&find_banner(&bad).unwrap(), &bad, &p.config()).is_err());

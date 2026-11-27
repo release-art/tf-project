@@ -44,9 +44,12 @@ pub fn exclusive_lock(path: &Path) -> Result<File> {
 pub fn try_exclusive_lock(path: &Path) -> Result<File> {
     let file = open_lock(path)?;
     // Any failure to take a free lock is, in practice, someone else holding it.
-    file.try_lock()
-        .map(|()| file)
-        .map_err(|_| Error::Msg(format!("Lock held by another process: {}", path.display())))
+    file.try_lock().map(|()| file).map_err(|_| {
+        Error::Msg(format!(
+            "Another tfp apply, refresh or destroy is already running in this slot (lock {}).",
+            path.display()
+        ))
+    })
 }
 
 /// The slot's saved state, if it has one.
@@ -157,7 +160,10 @@ mod tests {
         let busy = try_exclusive_lock(&path).unwrap_err();
         assert_eq!(
             busy,
-            Error::Msg(format!("Lock held by another process: {}", path.display()))
+            Error::Msg(format!(
+                "Another tfp apply, refresh or destroy is already running in this slot (lock {}).",
+                path.display()
+            ))
         );
         drop(held);
         drop(try_exclusive_lock(&path).unwrap());

@@ -9,11 +9,12 @@ use serde_json::{Value, json};
 use crate::banner::{find_banner, render_summary, unknown_fields_warning};
 use crate::commands::{
     Flags, build_apply_argv, build_import_argv, build_init_argv, build_output_argv, build_plan_argv,
-    build_providers_lock_argv, build_targeted_argv, require_active, require_slot_state,
+    build_providers_lock_argv, build_targeted_argv, confirm_protected, require_active, require_slot_state,
 };
 use crate::config::{
     CONFIG_FILE_NAME, CONFIG_TABLE, Config, PYPROJECT_FILE_NAME, PYPROJECT_TABLE, locate, parse_toml, walk,
 };
+use crate::identity;
 use crate::lock::{Backend, LockProvider, LockStatus, select_provider};
 use crate::models::{LastInvocation, MyState, Versioned};
 use crate::state::load_state;
@@ -156,12 +157,8 @@ pub fn do_self_state_show(config: &Config, ctx: &Ctx, all: bool) -> Result<Value
         return Ok(Value::Object(out));
     }
     let name = require_active(config, ctx)?.name;
-    let state = load_state(config, &name)?.ok_or_else(|| {
-        Error::Msg(format!(
-            "No state for slot {name:?} at {}.",
-            config.state_file(&name).display()
-        ))
-    })?;
+    let state = load_state(config, &name)?
+        .ok_or_else(|| Error::Msg(format!("Slot {name:?} isn't initialised. Run `tfp use {name}` first.")))?;
     Ok(state.to_json())
 }
 
@@ -254,6 +251,71 @@ fn secret_checks(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Vec
         .collect()
 }
 
+/// Is `tmp_dir` kept out of git? None when there's no `git`, or `tmp_dir` isn't inside a work tree.
+/// Whether az is signed in where every Azure slot expects; none when there is no Azure slot.
+fn azure_identity_check(config: &Config, path: Option<&std::ffi::OsStr>) -> Option<DoctorCheck> {
+    let azure: Vec<slots::ResolvedSlot> = slots::list_slots(config)
+        .into_iter()
+        .filter(|s| identity::looks_azure(&s.env, &s.backend_config))
+        .collect();
+    if azure.is_empty() {
+        return None;
+    }
+    let name = "azure identity";
+    let Some(az) = identity::find_az(config, path) else {
+        return Some(check(
+            name,
+            false,
+            format!(
+                "`{}` not found; install the Azure CLI or set [tf_project.programs] az",
+                config.programs.az
+            ),
+        ));
+    };
+    let account = match identity::az_account(&az, path.map(ToOwned::to_owned)) {
+        Ok(account) => account,
+        Err(e) => return Some(check(name, false, e.to_string())),
+    };
+    let found: Vec<identity::Assessment> = azure
+        .iter()
+        .map(|s| identity::assess(&s.name, &s.env, &account))
+        .collect();
+    let errors: Vec<&str> = found.iter().filter_map(|a| a.error.as_deref()).collect();
+    let notes = found.iter().filter_map(|a| a.warning.as_deref());
+    let detail = std::iter::once(format!("{} in tenant {}", account.user.name, account.tenant_id))
+        .chain(errors.iter().map(|e| (*e).to_owned()))
+        .chain(notes.map(str::to_owned))
+        .collect::<Vec<_>>()
+        .join("; ");
+    Some(check(name, errors.is_empty(), detail))
+}
+
+fn tmp_dir_ignored(config: &Config, found: &dyn Fn(&str) -> Option<String>) -> Option<DoctorCheck> {
+    let code = Command::new(found("git")?)
+        .arg("check-ignore")
+        .arg("-q")
+        // The trailing `/` lets a `tmp/` pattern match before the directory exists.
+        .arg(format!("{}/", config.tmp_dir.display()))
+        .current_dir(&config.project_root)
+        .stderr(std::process::Stdio::null())
+        .status()
+        .ok()
+        .and_then(|s| s.code());
+    let name = "tmp_dir git-ignored";
+    match code {
+        Some(0) => Some(check(name, true, config.tmp_dir.display().to_string())),
+        Some(1) => Some(check(
+            name,
+            false,
+            format!(
+                "add {} to .gitignore: saved plans and state snapshots hold secret values",
+                config.tmp_dir.display()
+            ),
+        )),
+        _ => None,
+    }
+}
+
 /// `tfp self doctor`: is everything tf-project needs in place? Programs are looked up on `path` (tfp's own `PATH`
 /// when none).
 #[must_use]
@@ -291,9 +353,31 @@ pub fn do_self_doctor(config: &Config, path: Option<&std::ffi::OsStr>) -> Vec<Do
             (false, false) => check(format!("{name} exists"), false, shown.to_string()),
         });
     }
-    checks.push(match slots::validate_unique(&slots::list_slots(config)) {
-        Ok(()) => check("slot uniqueness", true, "all banners produce distinct slot names"),
+    checks.extend(tmp_dir_ignored(config, &found));
+    checks.extend(azure_identity_check(config, path.as_deref()));
+    let scan = slots::scan_slots(config);
+    checks.push(match slots::validate_unique(&scan.slots) {
+        Ok(()) => {
+            let notes = slots::find_shared_state(&scan.slots).into_iter().map(|s| {
+                format!(
+                    "; {:?} and {:?} share state {:?} (state_key)",
+                    s.first.name,
+                    s.second.name,
+                    s.key()
+                )
+            });
+            let detail: String = std::iter::once("all banners produce distinct slot names and states".to_owned())
+                .chain(notes)
+                .collect();
+            check("slot uniqueness", true, detail)
+        }
         Err(e) => check("slot uniqueness", false, e.to_string()),
+    });
+    checks.push(if scan.skipped.is_empty() {
+        check("tfvars without a banner", true, "none")
+    } else {
+        let files: Vec<String> = scan.skipped.iter().map(ToString::to_string).collect();
+        check("tfvars without a banner", false, files.join("; "))
     });
     let orphans: Vec<String> = slots::list_orphans(config).into_iter().map(|o| o.name).collect();
     checks.push(if orphans.is_empty() {
@@ -303,7 +387,7 @@ pub fn do_self_doctor(config: &Config, path: Option<&std::ffi::OsStr>) -> Vec<Do
             "orphan slots",
             false,
             format!(
-                "found orphan slot directories with no matching banner: {}",
+                "no banner defines {}; `tfp rm <slot>` removes a slot directory",
                 orphans.join(", ")
             ),
         )
@@ -356,7 +440,7 @@ pub fn do_self_trace(config: &Config, ctx: &Ctx, command: TraceCommand, flags: &
         return Ok(build_init_argv(config, &resolved, &flags.extra));
     }
     let state = load_state(config, &name)?
-        .ok_or_else(|| Error::Msg(format!("No state for slot {name:?}. Run `tfp use {name}` first.")))?;
+        .ok_or_else(|| Error::Msg(format!("Slot {name:?} isn't initialised. Run `tfp use {name}` first.")))?;
     let var_file = "<DECRYPTED_TFVARS>";
     Ok(match command {
         TraceCommand::Plan => build_plan_argv(config, &state, var_file, flags),
@@ -380,11 +464,11 @@ pub fn do_self_trace(config: &Config, ctx: &Ctx, command: TraceCommand, flags: &
 /// # Errors
 /// No active slot, or nothing recorded.
 pub fn do_last_invocation(config: &Config, ctx: &Ctx) -> Result<LastInvocation> {
-    let path = config.last_invocation(&require_active(config, ctx)?.name);
+    let slot = require_active(config, ctx)?.name;
+    let path = config.last_invocation(&slot);
     if !path.exists() {
         return Err(Error::Msg(format!(
-            "No prior invocation recorded at {}.",
-            path.display()
+            "No Terraform command has run in slot {slot:?} yet."
         )));
     }
     Ok(LastInvocation::load_file(&path)?)
@@ -533,8 +617,7 @@ pub fn do_self_snapshot_restore(config: &Config, ctx: &mut Ctx, name: Option<&st
     let Some(target) = target else {
         if entries.is_empty() {
             return Err(Error::Msg(format!(
-                "No snapshots to restore for slot {slot:?}. \
-                 Run `tfp self snapshot create` or perform a state-mutating op first."
+                "Slot {slot:?} has no snapshots to restore. `tfp self snapshot create` takes one."
             )));
         }
         let names: Vec<String> = entries.iter().map(|e| e.path.display().to_string()).collect();
@@ -552,6 +635,12 @@ pub fn do_self_snapshot_restore(config: &Config, ctx: &mut Ctx, name: Option<&st
         "-force".into(),
         target.display().to_string(),
     ];
+    // The live banner decides, as for the other commands; the saved state stands in when it is gone.
+    let live = slots::resolve_slot(&slot, config, &ctx.cwd);
+    let env = live.as_ref().map_or(&state.environ, |s| &s.env);
+    let backend_config = live.as_ref().map_or(&state.backend_config, |s| &s.backend_config);
+    identity::check_azure_identity(config, ctx, &slot, env, backend_config)?;
+    confirm_protected(ctx, &slot, live.is_ok_and(|s| s.protected), "self snapshot restore")?;
     terraform::run(ctx, &cmd, &env_for_slot(config, &state))?;
     Ok(target)
 }

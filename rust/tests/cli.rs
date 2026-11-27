@@ -57,7 +57,9 @@ impl Project {
         cmd.args(args)
             .current_dir(&self.root)
             .env("PATH", path)
-            .env_remove("TFP_SLOT");
+            .env_remove("TFP_SLOT")
+            .env_remove("TFP_CONFIRM")
+            .stdin(std::process::Stdio::null());
         cmd
     }
 
@@ -97,4 +99,24 @@ fn ctrl_c_waits_for_terraform() {
         .unwrap();
     assert!(killed.success());
     assert_eq!(child.wait_with_output().unwrap().status.code(), Some(7));
+}
+
+#[test]
+fn a_protected_slot_needs_tfp_confirm_without_a_terminal() {
+    let p = Project::new("{}");
+    std::fs::write(
+        p.root.join("tfvars/dev.tfvars"),
+        "# {\"header\":\"terraform\",\"project\":\"demo\",\"backend_config\":{},\"protected\":true}\n",
+    )
+    .unwrap();
+    let destroy = |confirm: &str| {
+        p.command(env!("CARGO_BIN_EXE_tfp"), &["destroy"])
+            .env("TFP_CONFIRM", confirm)
+            .output()
+            .unwrap()
+    };
+    let refused = destroy("prod");
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(text(&refused.stderr).contains("TFP_CONFIRM=\"prod\" does not name it"));
+    assert!(destroy("dev").status.success());
 }

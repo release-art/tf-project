@@ -19,12 +19,17 @@ What you get:
   pointer change, with no re-init.
 - **Safer applies.** `tfp apply` only applies the plan you just reviewed, and
   refuses if the tfvars, the `.tf` sources or the backend changed since.
+- **Protected environments.** Mark `prod` as protected and every command that
+  changes it asks you to type its name first, after showing what the plan
+  destroys or replaces.
 - **A safety net for state surgery.** `tfp state rm`, `mv` and `import`
   snapshot the remote state first, and `tfp self snapshot restore` puts it
   back.
 - **Secrets out of git.** Tfvars can hold references like
   `{{ op://Infra/db/password }}` or `{{ az-kv://my-vault/secrets/db-password }}`; tfp
   fills them in from 1Password or Azure Key Vault at run time.
+- **Drift checks.** `tfp drift` plans every environment and reports which
+  ones no longer match their code.
 - **Help when things go wrong.** `tfp self doctor` checks your setup, and
   `tfp self lock break` clears a stuck Azure or S3 state lock.
 
@@ -42,11 +47,10 @@ scoop bucket add release-art https://github.com/release-art/scoop-bucket
 scoop install release-art/tf-project
 ```
 
-Either way you get two names for the same program: `tf-project` and `tfp`.
-It's a single native executable for macOS (Apple Silicon, Intel), Linux
-(x86_64, arm64) and Windows (x86_64); with pip, Python is only the delivery
-vehicle. Each [GitHub release](https://github.com/release-art/tf-project/releases)
-also has the programs as a plain `.tar.gz` / `.zip`.
+You get one native program under two names, `tfp` and `tf-project`, for
+macOS, Linux and Windows; pip only delivers it, no Python is needed to run it.
+[GitHub releases](https://github.com/release-art/tf-project/releases) also
+have plain `.tar.gz` / `.zip` downloads.
 
 ## A five-minute tour
 
@@ -89,8 +93,7 @@ tfp use prod      # switch; dev stays initialised for next time
 tfp status        # which slot am I on?
 ```
 
-Run `tfp self doctor` at any point to check that Terraform, your secret tools
-and the directories are where tfp expects them.
+If anything looks off, `tfp self doctor` checks your setup.
 
 ## Everyday commands
 
@@ -101,6 +104,7 @@ and the directories are where tfp expects them.
 | `tfp status` | Show the active slot and whether a plan is waiting. |
 | `tfp plan` / `tfp apply` | Plan and save; apply the saved plan. `-t <address>` targets. |
 | `tfp state …` / `tfp import …` | Terraform's state commands, with a snapshot first. |
+| `tfp drift` | Plan every slot without saving, and report which ones drifted. |
 | `tfp tf <anything>` | Any other Terraform command, run in the active slot. |
 | `tfp -s prod plan` | Run one command against another slot without switching. |
 | `tfp --dry-run …` | Show the Terraform command line instead of running it. |
@@ -108,15 +112,15 @@ and the directories are where tfp expects them.
 ## Learn more
 
 - [Configuration](https://github.com/release-art/tf-project/blob/main/docs/configuration.md):
-  `tf_project.toml`, the tfvars banner, and how slots get their names and
-  backend settings.
+  `tf_project.toml`, the tfvars banner, slot names, backend settings and the
+  provider cache.
 - [Commands](https://github.com/release-art/tf-project/blob/main/docs/commands.md):
   every command and flag, and how tfp picks the active slot.
 - [Secrets](https://github.com/release-art/tf-project/blob/main/docs/secrets.md):
   1Password and Azure Key Vault references in tfvars.
 - [Safety and recovery](https://github.com/release-art/tf-project/blob/main/docs/safety.md):
-  how applies are guarded, state snapshots, stuck locks, and the provider
-  cache.
+  stale-plan checks, protected slots, state snapshots, the Azure sign-in check
+  and stuck locks.
 - [Development](https://github.com/release-art/tf-project/blob/main/docs/development.md):
   building, testing and releasing tf-project itself.
 - [Changelog](https://github.com/release-art/tf-project/blob/main/CHANGELOG.md)

@@ -60,7 +60,7 @@ struct Targets {
 #[derive(Debug, Subcommand)]
 enum Wrapped {
     /// Switch to a slot: a slot name (banner `slot`, or tfvars stem) or a tfvars path. Runs `terraform init` only
-    /// when the slot is cold or its backend changed.
+    /// when the slot was never initialised or its backend changed.
     Use {
         /// Slot name or tfvars path.
         target: String,
@@ -136,6 +136,13 @@ enum Wrapped {
     Last,
     /// Summary of the active slot.
     Status,
+    /// Check every initialised, unprotected slot for drift with `terraform plan -detailed-exitcode`. Exits 0 when
+    /// all are clean, 2 when any drifted, 1 when any failed. Saves no plan and leaves the active slot alone.
+    Drift {
+        /// Emit the summary as JSON (Terraform's output goes to stderr).
+        #[arg(long)]
+        json: bool,
+    },
     /// Run any Terraform command in the active slot: `tfp tf validate`, `tfp tf providers`, ...
     Tf {
         /// Passed to Terraform as given.
@@ -341,6 +348,8 @@ pub fn main() -> ExitCode {
         cwd: std::env::current_dir().unwrap_or_default(),
         slot_flag: None,
         slot_env: std::env::var("TFP_SLOT").ok(),
+        confirm_env: std::env::var("TFP_CONFIRM").ok(),
+        interactive: std::io::IsTerminal::is_terminal(&std::io::stdin()),
         terraform: crate::terraform::Options::default(),
         search_path: None,
         temp_dir: std::env::temp_dir(),
@@ -555,7 +564,10 @@ fn dispatch(config: &Config, ctx: &mut Ctx, command: Wrapped) -> Result<i32> {
             commands::do_targeted(config, ctx, "destroy", &flags(targets, vec![], extra))
         }
         Wrapped::Fmt(extra) => commands::do_fmt(config, ctx, &extra.extra),
-        Wrapped::Output(extra) => commands::do_output(config, ctx, &extra.extra),
+        Wrapped::Output(extra) => commands::require_active(config, ctx).and_then(|_| {
+            let args = [&["output".to_owned(), "-json".to_owned()], &extra.extra[..]].concat();
+            commands::do_tf(config, ctx, &args)
+        }),
         Wrapped::Import { address, id, extra } => commands::do_import(config, ctx, &address, &id, &extra.extra),
         Wrapped::State(state) => {
             let (sub, args, extra) = match state {
@@ -584,6 +596,7 @@ fn dispatch(config: &Config, ctx: &mut Ctx, command: Wrapped) -> Result<i32> {
             say!(ctx.out, "argv      = {}", shell_join(&last.argv));
         }),
         Wrapped::Status => return status(config, ctx),
+        Wrapped::Drift { json } => return Ok(drift(config, ctx, json)),
         Wrapped::Tf { args } => commands::do_tf(config, ctx, &args),
     }
     .map(|()| 0)
@@ -592,28 +605,34 @@ fn dispatch(config: &Config, ctx: &mut Ctx, command: Wrapped) -> Result<i32> {
 fn ls(config: &Config, ctx: &mut Ctx, json: bool) -> Result<i32> {
     let listing = commands::slot_listing(config, ctx)?;
     let orphans = slots::list_orphans(config);
-    if let Err(e) = slots::validate_unique(&slots::list_slots(config)) {
+    if let Err(e) = commands::check_slots(config, ctx) {
         say!(ctx.err, "warning: {e}");
     }
     if json {
+        let skipped = slots::scan_slots(config).skipped;
         say!(
             ctx.out,
             "{}",
-            pretty(&serde_json::json!({"slots": listing, "orphans": orphans}))
+            pretty(&serde_json::json!({"slots": listing, "orphans": orphans, "skipped": skipped}))
         );
         return Ok(0);
     }
     if listing.is_empty() {
         say!(ctx.out, "(no slots found in tfvars_dir)");
     } else {
-        let header = ["", "SLOT", "PROJECT", "TFVARS", "BACKEND KEY", "WARM SINCE"].map(str::to_owned);
+        let header = ["", "SLOT", "PROJECT", "TFVARS", "BACKEND KEY", "INITIALISED"].map(str::to_owned);
         let rows: Vec<[String; 6]> = std::iter::once(header)
             .chain(listing.into_iter().map(|s| {
                 let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
                 let mark = if s.is_active { "*" } else { " " };
+                let name = if s.protected {
+                    format!("{} (protected)", s.name)
+                } else {
+                    s.name
+                };
                 [
                     mark.into(),
-                    s.name,
+                    name,
                     s.project,
                     s.tfvars.display().to_string(),
                     dash(s.backend_key),
@@ -649,9 +668,31 @@ fn ls(config: &Config, ctx: &mut Ctx, json: bool) -> Result<i32> {
     Ok(0)
 }
 
+fn drift(config: &Config, ctx: &mut Ctx, json: bool) -> i32 {
+    ctx.terraform.stdout_to_stderr = json;
+    let entries = commands::do_drift(config, ctx);
+    if json {
+        say!(ctx.out, "{}", pretty(&serde_json::json!(entries)));
+    } else {
+        let width = entries.iter().map(|e| e.slot.chars().count()).max().unwrap_or(0).max(4);
+        say!(ctx.out, "{:<width$}  RESULT", "SLOT");
+        for e in &entries {
+            say!(ctx.out, "{:<width$}  {}", e.slot, commands::describe_drift(e));
+        }
+    }
+    let any = |r| entries.iter().any(|e| e.result == r);
+    if any(commands::DriftResult::Error) {
+        1
+    } else if any(commands::DriftResult::Drift) {
+        2
+    } else {
+        0
+    }
+}
+
 fn status(config: &Config, ctx: &mut Ctx) -> Result<i32> {
     let Some(report) = commands::status_report(config, ctx)? else {
-        say!(ctx.err, "Not initialized. Run `tfp use <slot>` first.");
+        say!(ctx.err, "No active slot. Run `tfp use <slot>` first.");
         return Ok(1);
     };
     let state = &report.state;
@@ -678,6 +719,7 @@ fn status(config: &Config, ctx: &mut Ctx) -> Result<i32> {
         "plan        = {}",
         if report.plan_ready { "ready" } else { "absent" }
     );
+    say!(ctx.out, "protected   = {}", if report.protected { "yes" } else { "no" });
     Ok(0)
 }
 
@@ -776,9 +818,10 @@ fn snapshot(config: &Config, ctx: &mut Ctx, command: SnapshotCmd) -> Result<()> 
                 let which = name
                     .as_ref()
                     .map_or_else(|| "the newest snapshot".to_owned(), |n| format!("snapshot {n:?}"));
+                let slot = commands::require_active(config, ctx)?.name;
                 confirm(
                     ctx,
-                    &format!("Restore {which} to the remote backend? This will OVERWRITE the live tfstate."),
+                    &format!("Restore {which} of slot {slot:?}? It OVERWRITES the slot's remote state."),
                 )?;
             }
             let restored = sc::do_self_snapshot_restore(config, ctx, name.as_deref())?;
@@ -808,9 +851,10 @@ fn lock(config: &Config, ctx: &mut Ctx, command: LockCmd) -> Result<i32> {
         }
         LockCmd::Break { yes, blunt } => {
             if !yes {
+                let slot = commands::require_active(config, ctx)?.name;
                 confirm(
                     ctx,
-                    "Release the remote-state lock? Only do this if terraform is no longer running.",
+                    &format!("Release the state lock of slot {slot:?}? Only if no Terraform is still running on it."),
                 )?;
             }
             match sc::do_self_lock_break(config, ctx, blunt)? {
@@ -905,7 +949,10 @@ mod tests {
         assert!(code == 2 && err.contains("Usage:"));
         assert_eq!(tfp(&p, &["nope"]).0, 2);
         let (code, _, err) = tfp_in(std::path::Path::new("/"), &["status"], "");
-        assert!(code == 1 && err.starts_with("config error: Could not find"), "{err}");
+        assert!(
+            code == 1 && err.starts_with("config error: No tf_project.toml"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -951,11 +998,7 @@ mod tests {
         let p = Project::new("");
         assert_eq!(
             tfp(&p, &["status"]),
-            (
-                1,
-                String::new(),
-                "Not initialized. Run `tfp use <slot>` first.\n".into()
-            )
+            (1, String::new(), "No active slot. Run `tfp use <slot>` first.\n".into())
         );
         assert_eq!(tfp(&p, &["ls"]).1, "(no slots found in tfvars_dir)\n");
         p.tfvars("a", DEMO);
@@ -1004,7 +1047,7 @@ mod tests {
         std::fs::write(p.path("tmp/slots/dev/tfplan"), "").unwrap();
         assert_eq!(tfp(&p, &["apply"]).0, 0);
         let (code, _, err) = tfp(&p, &["apply", "--force"]);
-        assert!(code == 1 && err.contains("no saved tfplan"));
+        assert!(code == 1 && err.contains("has no saved plan"));
     }
 
     #[test]
@@ -1080,7 +1123,45 @@ secret_sources:
             "No state file to remove.\n"
         );
         let (code, _, err) = tfp(&p, &["self", "state", "show"]);
-        assert!(code == 1 && err.starts_with("No state for slot \"dev\""));
+        assert!(code == 1 && err.starts_with("Slot \"dev\" isn't initialised"));
+    }
+
+    #[test]
+    fn protected_slots_show_and_guard() {
+        let (p, _c) = bound("[ \"$2 $3\" = \"state pull\" ] && echo '{}'\nexit 0");
+        assert!(tfp(&p, &["status"]).1.ends_with("protected   = no\n"));
+        p.tfvars(
+            "dev",
+            r#"{"header":"terraform","project":"demo","state_key":"/demo/dev.tfstate","protected":true}"#,
+        );
+        assert!(tfp(&p, &["status"]).1.ends_with("protected   = yes\n"));
+        assert!(
+            tfp(&p, &["ls"])
+                .1
+                .lines()
+                .nth(1)
+                .unwrap()
+                .starts_with("*  dev (protected)  demo")
+        );
+        let (_, out, _) = tfp(&p, &["self", "banner", "check", "tfvars/dev.tfvars"]);
+        assert!(out.contains("\"protected\": true"), "{out}");
+        assert_eq!(tfp(&p, &["self", "snapshot", "create"]).0, 0);
+        // `-y` skips the y/N question, not the protection; `--dry-run` asks nothing.
+        let (code, _, err) = tfp(&p, &["self", "snapshot", "restore", "-y"]);
+        assert!(
+            code == 1 && err.contains("Set TFP_CONFIRM=dev to allow `tfp self snapshot restore`"),
+            "{err}"
+        );
+        assert_eq!(tfp(&p, &["--dry-run", "destroy"]).0, 0);
+        let restore = |confirm: &str| {
+            let mut s = Streams::default();
+            let mut ctx = s.ctx(&p.root);
+            ctx.confirm_env = Some(confirm.into());
+            run(strings(&["tfp", "self", "snapshot", "restore", "-y"]), &mut ctx)
+        };
+        assert_eq!(restore("prod"), 1);
+        assert_eq!(restore("dev"), 0);
+        assert!(p.terraform_calls().last().unwrap().contains("state push -force "));
     }
 
     #[test]
@@ -1092,9 +1173,13 @@ secret_sources:
         assert_eq!(tfp(&p, &["self", "doctor"]).0, 1);
         assert_eq!(tfp(&p, &["-s", "dev", "self", "snapshot", "list"]).0, 1);
         let (code, _, err) = tfp(&p, &["-s", "dev", "self", "snapshot", "restore", "-y"]);
-        assert!(code == 1 && err.starts_with("No state for slot"), "{err}");
+        assert!(code == 1 && err.starts_with("Slot \"dev\" isn't initialised"), "{err}");
         let (code, _, err) = tfp_in(&p.root, &["self", "lock", "break"], "\n");
-        assert!(code == 1 && err.ends_with("Aborted!\n"));
+        assert!(code == 1 && err.starts_with("No active slot"), "{err}");
+        let (code, _, err) = tfp_in(&p.root, &["-s", "dev", "self", "lock", "break"], "\n");
+        assert!(code == 1 && err.ends_with("Aborted!\n"), "{err}");
+        let (code, _, err) = tfp_in(&p.root, &["self", "snapshot", "restore"], "\n");
+        assert!(code == 1 && err.starts_with("No active slot"), "{err}");
         assert_eq!(tfp(&p, &["self", "init"]).0, 1);
         let dir = tempfile::tempdir().unwrap();
         let (code, out, _) = tfp_in(dir.path(), &["self", "init"], "");
@@ -1108,7 +1193,7 @@ secret_sources:
         let (p, _c) = bound("");
         assert_eq!(tfp(&p, &["self", "snapshot", "list"]).1, "(no snapshots)\n");
         assert!(
-            fails(&p, &["self", "snapshot", "restore", "-y"]).starts_with("No snapshots to restore for slot \"dev\".")
+            fails(&p, &["self", "snapshot", "restore", "-y"]).starts_with("Slot \"dev\" has no snapshots to restore.")
         );
     }
 
@@ -1163,7 +1248,7 @@ secret_sources:
             "No state file to remove.\n"
         );
         assert!(fails(&p, &["-s", "ghost", "tf", "version"]).starts_with("no tfvars defines slot"));
-        assert!(fails(&p, &["-s", "dev", "self", "trace", "plan"]).starts_with("No state for slot \"dev\". Run"));
+        assert!(fails(&p, &["-s", "dev", "self", "trace", "plan"]).starts_with("Slot \"dev\" isn't initialised. Run"));
         assert!(fails(&p, &["use", "ghost"]).starts_with("no tfvars defines slot"));
     }
 
@@ -1205,7 +1290,10 @@ secret_sources:
             &["state", "list"],
             &["tf", "version"],
         ] {
-            assert!(fails(&p, args).contains("terraform data dir is missing"), "{args:?}");
+            assert!(
+                fails(&p, args).contains("has lost its .terraform directory"),
+                "{args:?}"
+            );
         }
     }
 
@@ -1317,6 +1405,29 @@ secret_sources:
     }
 
     #[test]
+    fn doctor_checks_tmp_dir_is_git_ignored() {
+        let p = Project::new("");
+        let ignored = |p: &Project| {
+            crate::self_commands::do_self_doctor(&p.config(), None)
+                .into_iter()
+                .find(|c| c.name == "tmp_dir git-ignored")
+                .map(|c| c.ok)
+        };
+        assert_eq!(ignored(&p), None);
+        assert!(
+            std::process::Command::new("git")
+                .args(["init", "-q"])
+                .current_dir(&p.root)
+                .status()
+                .unwrap()
+                .success()
+        );
+        assert_eq!(ignored(&p), Some(false));
+        p.write(".gitignore", "tmp/\n");
+        assert_eq!(ignored(&p), Some(true));
+    }
+
+    #[test]
     fn doctor_checks_each_secret_scheme_in_use() {
         let p = Project::new("");
         let doctor = |p: &Project, path: &std::path::Path| {
@@ -1411,7 +1522,7 @@ secret_sources:
         assert!(fails(&p, &["rm", "old"]).contains("old"));
         chmod(&p.path("tmp/slots/old/sub"), 0o755);
         let _held = crate::state::exclusive_lock(&c.apply_lock("dev")).unwrap();
-        assert!(fails(&p, &["refresh"]).starts_with("Lock held by another process"));
+        assert!(fails(&p, &["refresh"]).starts_with("Another tfp apply, refresh or destroy is already running"));
     }
 
     #[test]
@@ -1434,11 +1545,7 @@ secret_sources:
                 text.starts_with(&format!("{existing}{}", &expected[existing.len()..])),
                 "{text:?}"
             );
-            assert!(
-                !crate::config::Config::discover(dir.path())
-                    .unwrap()
-                    .legacy_secrets_command
-            );
+            assert!(crate::config::Config::discover(dir.path()).is_ok());
             assert!(
                 tfp_in(dir.path(), &["self", "init"], "")
                     .2
@@ -1496,7 +1603,7 @@ secret_sources:
             "[FAIL] op:// references: 1Password CLI `no-such-op`",
             "[FAIL] terraform_dir exists",
             "[FAIL] slot uniqueness",
-            "found orphan slot directories with no matching banner: x, y",
+            "no banner defines x, y",
         ] {
             assert!(out.contains(line), "{line}\n{out}");
         }
@@ -1511,6 +1618,54 @@ secret_sources:
             "{out}"
         );
         assert!(fails(&p, &["self", "banner", "check", "tfvars/none.tfvars"]).contains("none.tfvars"));
+    }
+
+    #[test]
+    fn tfvars_without_a_slot_and_shared_states_are_reported() {
+        let (p, _c) = bound("");
+        let shared = r#"{"header":"terraform","project":"demo","state_key":"/demo/dev.tfstate","slot":"dev2"}"#;
+        p.tfvars("dev2", shared);
+        let (code, out, _) = tfp(&p, &["self", "doctor"]);
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            out.contains("; \"dev\" and \"dev2\" share state \"demo/dev.tfstate\" (state_key)"),
+            "{out}"
+        );
+        let line = |out: &str| {
+            let line = out.lines().find(|l| l.contains("tfvars without a banner")).unwrap();
+            line.split_whitespace().collect::<Vec<_>>().join(" ")
+        };
+        assert_eq!(line(&out), "[OK ] tfvars without a banner none");
+        p.write("tfvars/none.tfvars", "x = 1\n");
+        let (code, out, _) = tfp(&p, &["self", "doctor"]);
+        assert_eq!(code, 1);
+        assert!(line(&out).starts_with("[FAIL] tfvars without a banner /"), "{out}");
+        assert!(line(&out).ends_with("none.tfvars (no banner)"), "{out}");
+        let warning = format!(
+            "warning: no slot from {} (no banner)\n",
+            p.path("tfvars/none.tfvars").display()
+        );
+        assert!(tfp(&p, &["use", "dev"]).2.starts_with(&warning));
+        assert!(tfp(&p, &["init"]).2.starts_with(&warning));
+        let (_, out, err) = tfp(&p, &["ls", "--json"]);
+        assert_eq!(err, warning);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(json["skipped"][0]["reason"], "no banner");
+        // A default key shared by accident is refused.
+        p.tfvars("dev2", r#"{"header":"terraform","project":"demo","slot":"dev2"}"#);
+        p.tfvars("dev", r#"{"header":"terraform","project":"demo","slot":"dev"}"#);
+        std::fs::write(
+            p.path("tf_project.toml"),
+            "[tf_project]\nterraform_binary = \"bin/terraform\"\nbackend_config = { key = \"one\" }\n",
+        )
+        .unwrap();
+        let (code, _, err) = tfp(&p, &["use", "dev"]);
+        assert!(code == 1 && err.contains("share one remote state"), "{err}");
+        assert!(
+            tfp(&p, &["ls"])
+                .2
+                .contains("warning: slots \"dev\" and \"dev2\" share one remote state")
+        );
     }
 
     #[test]
@@ -1728,9 +1883,164 @@ secret_sources:
         for args in [&["self", "lock", "status"][..], &["self", "lock", "break", "-y"]] {
             let (code, _, err) = tfp_cloud(&p, args, "");
             assert!(
-                code == 1 && err.starts_with("Unrecognised backend in saved state."),
+                code == 1 && err.starts_with("`tfp self lock` handles azurerm and s3"),
                 "{err}"
             );
         }
+    }
+
+    /// Slot `dev` bound with `env` in its banner, a plan saved, and a fake `az` running `az_body`.
+    fn azure(env: &str, az_body: &str) -> Project {
+        let (p, _c) = bound("[ \"$2 $3\" = \"state pull\" ] && echo '{}'\nexit 0");
+        p.tfvars(
+            "dev",
+            &format!(r#"{{"header":"terraform","project":"demo","state_key":"/demo/dev.tfstate","env":{env}}}"#),
+        );
+        chmod(&p.write("bin/az", &format!("#!/bin/sh\n{az_body}\n")), 0o755);
+        assert_eq!(tfp(&p, &["plan"]).0, 0);
+        std::fs::write(p.path("tmp/slots/dev/tfplan"), "").unwrap();
+        p
+    }
+
+    const ACCOUNT: &str =
+        r#"echo '{"id":"sub-1","name":"Default","tenantId":"t-1","user":{"name":"me@x","type":"user"}}'"#;
+
+    #[test]
+    fn azure_identity_is_checked_before_changes() {
+        let p = azure(r#"{"ARM_TENANT_ID":"t-2"}"#, ACCOUNT);
+        assert_eq!(tfp(&p, &["self", "snapshot", "create"]).0, 0);
+        let calls = p.terraform_calls().len();
+        for args in [
+            &["apply"][..],
+            &["destroy"],
+            &["import", "a.b", "id"],
+            &["state", "mv", "a", "b"],
+            &["self", "snapshot", "restore", "-y"],
+        ] {
+            let (code, _, err) = tfp_cloud(&p, args, "");
+            assert_eq!(code, 1, "{args:?}");
+            assert!(
+                err.ends_with(
+                    "slot \"dev\" expects tenant t-2 but az is signed in to tenant t-1 (me@x) - \
+                     run `az login --tenant t-2`\n"
+                ),
+                "{args:?}: {err}"
+            );
+        }
+        assert_eq!(p.terraform_calls().len(), calls, "terraform never ran");
+        // Reading, and --dry-run, don't ask az.
+        assert_eq!(tfp_cloud(&p, &["state", "list"], "").0, 0);
+        assert_eq!(tfp_cloud(&p, &["--dry-run", "destroy"], "").0, 0);
+        assert!(!p.path("bin/az.log").exists());
+        let (code, out, _) = tfp_cloud(&p, &["self", "doctor"], "");
+        assert_eq!(code, 1);
+        assert!(
+            out.contains("me@x in tenant t-1; slot \"dev\" expects tenant t-2"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn azure_identity_warns_without_a_subscription() {
+        let p = azure(r#"{"ARM_TENANT_ID":"t-1"}"#, ACCOUNT);
+        let (code, _, err) = tfp_cloud(&p, &["apply"], "");
+        assert_eq!(code, 0, "{err}");
+        assert_eq!(
+            err,
+            "warning: slot \"dev\" sets no ARM_SUBSCRIPTION_ID; Terraform will use az's default subscription \
+             Default (sub-1)\n"
+        );
+        let (code, out, _) = tfp_cloud(&p, &["self", "doctor"], "");
+        assert_eq!(code, 0, "{out}");
+        assert!(
+            out.contains("me@x in tenant t-1; slot \"dev\" sets no ARM_SUBSCRIPTION_ID"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn azure_identity_that_matches_is_quiet() {
+        let p = azure(r#"{"ARM_TENANT_ID":"t-1","ARM_SUBSCRIPTION_ID":"s"}"#, ACCOUNT);
+        assert_eq!(tfp_cloud(&p, &["destroy"], ""), (0, String::new(), String::new()));
+        // A configured az that isn't there is not looked for on PATH.
+        let toml = std::fs::read_to_string(p.path("tf_project.toml")).unwrap();
+        std::fs::write(
+            p.path("tf_project.toml"),
+            format!("{toml}[tf_project.programs]\naz = \"/no/such/az\"\n"),
+        )
+        .unwrap();
+        assert_eq!(tfp(&p, &["destroy"]).0, 0);
+    }
+
+    #[test]
+    fn azure_identity_when_az_is_missing_or_signed_out() {
+        // Signed out, or printing something else.
+        for body in ["echo 'Please run az login' >&2; exit 1", "echo nope"] {
+            let p = azure(r#"{"ARM_SUBSCRIPTION_ID":"s"}"#, body);
+            let (code, _, err) = tfp_cloud(&p, &["destroy"], "");
+            assert!(
+                code == 1 && err.contains("`az account show` failed (") && err.ends_with("Run `az login`.\n"),
+                "{err}"
+            );
+            let (code, out, _) = tfp_cloud(&p, &["self", "doctor"], "");
+            assert!(code == 1 && out.contains("Run `az login`."), "{out}");
+        }
+        // Found but cannot start.
+        let p = azure(r#"{"ARM_SUBSCRIPTION_ID":"s"}"#, "");
+        p.write("bin/az", "#!/no/such/shell\n");
+        let (code, _, err) = tfp_cloud(&p, &["destroy"], "");
+        assert!(code == 1 && err.contains("bin/az: "), "{err}");
+        // Not installed: commands go ahead, doctor says so.
+        std::fs::remove_file(p.path("bin/az")).unwrap();
+        let mut s = Streams::default();
+        let mut ctx = s.ctx(&p.root);
+        ctx.search_path = Some(p.path("bin").into());
+        assert_eq!(run(strings(&["tfp", "destroy"]), &mut ctx), 0, "{}", s.err());
+        let checks = crate::self_commands::do_self_doctor(&p.config(), Some(p.path("bin").as_os_str()));
+        let az = checks.iter().find(|c| c.name == "azure identity").unwrap();
+        assert!(!az.ok && az.detail.starts_with("`az` not found"), "{}", az.detail);
+    }
+
+    #[test]
+    fn drift_summary_and_exit_codes() {
+        let (p, c) =
+            bound("[ \"$2\" = plan ] && case \"$TF_DATA_DIR\" in */qa/*) exit 2;; */bad/*) exit 1;; esac\nexit 0");
+        let (code, out, err) = tfp(&p, &["drift"]);
+        assert_eq!((code, out.as_str()), (0, "SLOT  RESULT\ndev   clean\n"), "{err}");
+        assert_eq!(err, "==== drift: slot \"dev\" ====\n");
+        // Drift alone exits 2; uninitialised slots are skipped and don't count.
+        p.tfvars("qa", r#"{"header":"terraform","project":"demo"}"#);
+        p.tfvars("bad", r#"{"header":"terraform","project":"demo"}"#);
+        assert_eq!(tfp(&p, &["use", "qa"]).0, 0);
+        let (code, out, err) = tfp(&p, &["drift"]);
+        assert_eq!(code, 2);
+        assert_eq!(
+            out,
+            "SLOT  RESULT\nbad   skipped: not initialised - run `tfp use bad`\ndev   clean\nqa    drift\n"
+        );
+        assert!(
+            err.starts_with("slot \"bad\": skipped: not initialised - run `tfp use bad`\n"),
+            "{err}"
+        );
+        // Any error exits 1.
+        assert_eq!(tfp(&p, &["use", "bad"]).0, 0);
+        let (code, out, _) = tfp(&p, &["drift", "--json"]);
+        assert_eq!(code, 1);
+        let json: serde_json::Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([
+                {"slot": "bad", "result": "error", "reason": "exit code 1"},
+                {"slot": "dev", "result": "clean"},
+                {"slot": "qa", "result": "drift"},
+            ])
+        );
+        // --dry-run runs nothing.
+        let (code, _, err) = tfp(&p, &["--dry-run", "drift"]);
+        assert!(
+            code == 0 && err.contains("[dry-run] ") && err.contains(" -detailed-exitcode '-lock=false' '-input=false'"),
+            "{err}"
+        );
+        assert_eq!(crate::state::read_active(&c).unwrap().as_deref(), Some("bad"));
     }
 }

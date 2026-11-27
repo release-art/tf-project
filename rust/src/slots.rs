@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Serialize;
 
-use crate::banner::{SlotName, find_banner, resolve_backend_config, resolve_slot_name};
+use crate::banner::{SlotName, banner_in, find_banner, resolve_backend_config, resolve_slot_name};
 use crate::config::Config;
 use crate::models::Banner;
 use crate::state::read_active;
@@ -32,6 +32,10 @@ pub struct ResolvedSlot {
     pub backend_config: BTreeMap<String, String>,
     /// `tmp/slots/<name>`.
     pub slot_dir: PathBuf,
+    /// The banner's `protected`.
+    pub protected: bool,
+    /// Whether the banner chose the backend `key` (`state_key`, or `key` in its `backend_config`).
+    pub key_is_explicit: bool,
 }
 
 impl ResolvedSlot {
@@ -98,6 +102,8 @@ pub fn resolve_slot_from_banner(banner: &Banner, tfvars: &Path, config: &Config)
         env: banner.env.clone(),
         backend_config: resolve_backend_config(banner, tfvars, config)?,
         slot_dir: config.slot_dir(&name),
+        protected: banner.protected,
+        key_is_explicit: banner.state_key.is_some() || banner.backend_config.contains_key("key"),
         name,
     })
 }
@@ -132,30 +138,137 @@ fn no_such_slot(name: &str, slots: &[ResolvedSlot]) -> Error {
     Error::Slot(format!("no tfvars defines slot {name:?}. Available: {available}"))
 }
 
-/// Every slot the `*.tfvars` banners under `tfvars_dir` define, sorted by name. Files without a usable banner are
-/// skipped; `tfp self banner check` explains them.
+/// A `*.tfvars` file under `tfvars_dir` that defines no slot.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SkippedTfvars {
+    /// The file.
+    pub path: PathBuf,
+    /// Why: no banner, or what is wrong with it.
+    pub reason: String,
+}
+
+impl std::fmt::Display for SkippedTfvars {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} ({})", self.path.display(), self.reason)
+    }
+}
+
+/// What the `*.tfvars` files under `tfvars_dir` define.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SlotScan {
+    /// Every slot, sorted by name.
+    pub slots: Vec<ResolvedSlot>,
+    /// The files that define none.
+    pub skipped: Vec<SkippedTfvars>,
+}
+
+/// Every slot the `*.tfvars` banners under `tfvars_dir` define, and the files that define none.
 #[must_use]
-pub fn list_slots(config: &Config) -> Vec<ResolvedSlot> {
-    let mut slots: Vec<ResolvedSlot> = walkdir::WalkDir::new(&config.tfvars_dir)
+pub fn scan_slots(config: &Config) -> SlotScan {
+    let mut scan = SlotScan {
+        slots: Vec::new(),
+        skipped: Vec::new(),
+    };
+    let files = walkdir::WalkDir::new(&config.tfvars_dir)
         .sort_by_file_name()
         .into_iter()
         .filter_map(std::result::Result::ok)
-        .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "tfvars"))
-        .filter_map(|e| {
-            find_banner(e.path())
-                .and_then(|b| resolve_slot_from_banner(&b, e.path(), config))
-                .ok()
-        })
-        .collect();
-    slots.sort_by(|a, b| a.name.cmp(&b.name));
-    slots
+        .filter(|e| e.file_type().is_file() && e.path().extension().is_some_and(|x| x == "tfvars"));
+    for entry in files {
+        let path = entry.path();
+        let slot = std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|text| match banner_in(&text) {
+                None => Err("no banner".to_owned()),
+                Some(banner) => banner.map_err(|e| format!("invalid banner: {e}")),
+            })
+            .and_then(|banner| resolve_slot_from_banner(&banner, path, config).map_err(|e| e.to_string()));
+        match slot {
+            Ok(slot) => scan.slots.push(slot),
+            Err(reason) => scan.skipped.push(SkippedTfvars {
+                path: path.to_path_buf(),
+                reason,
+            }),
+        }
+    }
+    scan.slots.sort_by(|a, b| a.name.cmp(&b.name));
+    scan
 }
 
-/// Refuse two tfvars files claiming the same slot name.
+/// Every slot the `*.tfvars` banners under `tfvars_dir` define, sorted by name; see [`scan_slots`] for the files
+/// that define none.
+#[must_use]
+pub fn list_slots(config: &Config) -> Vec<ResolvedSlot> {
+    scan_slots(config).slots
+}
+
+/// Two slots with the same backend settings, so one remote state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SharedState {
+    /// One slot.
+    pub first: ResolvedSlot,
+    /// The other.
+    pub second: ResolvedSlot,
+}
+
+impl SharedState {
+    /// Whether both banners chose the key: sharing on purpose.
+    #[must_use]
+    pub fn is_explicit(&self) -> bool {
+        self.first.key_is_explicit && self.second.key_is_explicit
+    }
+
+    /// The backend `key` they share.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        self.first.backend_config.get("key").map_or("", String::as_str)
+    }
+}
+
+/// Pairs of differently named slots whose whole `-backend-config` is the same. Only slots with a backend `key`
+/// count.
+// ponytail: keyless slots (a local backend) aren't compared; their state lives in the project dir, not in config.
+#[must_use]
+pub fn find_shared_state(slots: &[ResolvedSlot]) -> Vec<SharedState> {
+    let mut shared = Vec::new();
+    for (i, first) in slots.iter().enumerate() {
+        for second in slots.iter().skip(i + 1) {
+            if first.name != second.name
+                && first.backend_config.contains_key("key")
+                && first.backend_config == second.backend_config
+            {
+                shared.push(SharedState {
+                    first: first.clone(),
+                    second: second.clone(),
+                });
+            }
+        }
+    }
+    shared
+}
+
+/// Refuse two tfvars files claiming the same slot name, or two slots sharing a remote state that a banner didn't ask
+/// for (a default key from the file name).
 ///
 /// # Errors
 /// [`Error::Slot`] naming both files.
 pub fn validate_unique(slots: &[ResolvedSlot]) -> Result<()> {
+    validate_unique_names(slots)?;
+    match find_shared_state(slots).into_iter().find(|s| !s.is_explicit()) {
+        Some(s) => Err(Error::Slot(format!(
+            "slots {:?} and {:?} share one remote state (key {:?}):\n  {}\n  {}\n\
+             Set a distinct \"state_key\" in one banner, or the same \"state_key\" in both to share it on purpose.",
+            s.first.name,
+            s.second.name,
+            s.key(),
+            s.first.tfvars.display(),
+            s.second.tfvars.display()
+        ))),
+        None => Ok(()),
+    }
+}
+
+fn validate_unique_names(slots: &[ResolvedSlot]) -> Result<()> {
     let kind = |s: &ResolvedSlot| if s.name_is_explicit { "explicit" } else { "default" };
     let pair = slots.windows(2).find_map(|w| match w {
         [a, b] if a.name == b.name => Some((a, b)),
@@ -237,8 +350,8 @@ mod tests {
     use pretty_assertions::assert_eq;
 
     use super::{
-        ActiveSlot, Source, assert_slot_exists, list_orphans, list_slots, looks_like_path, resolve_active,
-        resolve_slot, validate_unique,
+        ActiveSlot, Source, assert_slot_exists, find_shared_state, list_orphans, list_slots, looks_like_path,
+        resolve_active, resolve_slot, scan_slots, validate_unique,
     };
     use crate::Error;
     use crate::state::write_active;
@@ -269,6 +382,83 @@ mod tests {
         assert_eq!(validate_unique(&slots), Ok(()));
         assert_eq!(assert_slot_exists(&c, "z"), Ok(()));
         assert!(matches!(assert_slot_exists(&c, "q"), Err(Error::Slot(m)) if m.ends_with("Available: b, z")));
+    }
+
+    #[test]
+    fn files_that_define_no_slot_say_why() {
+        let p = Project::new("");
+        p.tfvars("ok", DEMO);
+        p.write("tfvars/none.tfvars", "x = 1\n");
+        p.tfvars("broken", r#"{"header":"terraform"}"#);
+        p.tfvars("badkey", r#"{"header":"terraform","project":"demo","state_key":"rel"}"#);
+        std::fs::write(p.path("tfvars/binary.tfvars"), [0xff, 0xfe]).unwrap();
+        let scan = scan_slots(&p.config());
+        assert_eq!(scan.slots.len(), 1);
+        let reasons: Vec<String> = scan.skipped.iter().map(ToString::to_string).collect();
+        assert_eq!(reasons.len(), 4, "{reasons:?}");
+        assert!(
+            reasons[0].contains("badkey.tfvars (banner in ") && reasons[0].contains("must be an absolute POSIX path"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[1].contains("binary.tfvars (stream did not contain valid UTF-8)"),
+            "{reasons:?}"
+        );
+        assert!(
+            reasons[2].contains("broken.tfvars (invalid banner: missing field `project`"),
+            "{reasons:?}"
+        );
+        assert_eq!(
+            reasons[3],
+            format!("{} (no banner)", p.path("tfvars/none.tfvars").display())
+        );
+    }
+
+    #[test]
+    fn slots_sharing_a_remote_state() {
+        let p = Project::new("state_key_prefix = \"p/\"");
+        let c = p.config();
+        // Two files named dev.tfvars default to the same key.
+        p.tfvars("a/dev", r#"{"header":"terraform","project":"demo","slot":"a"}"#);
+        p.tfvars("b/dev", r#"{"header":"terraform","project":"demo","slot":"b"}"#);
+        let err = validate_unique(&list_slots(&c)).unwrap_err().to_string();
+        assert!(
+            err.starts_with("slots \"a\" and \"b\" share one remote state (key \"p/dev.tfstate\"):\n  "),
+            "{err}"
+        );
+        assert!(
+            err.contains("a/dev.tfvars\n  ") && err.ends_with("to share it on purpose."),
+            "{err}"
+        );
+        // A different container is a different state.
+        p.tfvars(
+            "b/dev",
+            r#"{"header":"terraform","project":"demo","slot":"b","backend_config":{"container_name":"c2"}}"#,
+        );
+        assert_eq!(validate_unique(&list_slots(&c)), Ok(()));
+        // One banner choosing the other's default key is still an accident.
+        p.tfvars(
+            "b/dev",
+            r#"{"header":"terraform","project":"demo","slot":"b","state_key":"/p/dev.tfstate"}"#,
+        );
+        assert!(validate_unique(&list_slots(&c)).is_err());
+        // Both choosing it is on purpose.
+        p.tfvars(
+            "a/dev",
+            r#"{"header":"terraform","project":"demo","slot":"a","state_key":"/p/dev.tfstate"}"#,
+        );
+        let slots = list_slots(&c);
+        assert_eq!(validate_unique(&slots), Ok(()));
+        let shared = find_shared_state(&slots);
+        assert_eq!(shared.len(), 1);
+        assert!(shared[0].is_explicit());
+        assert_eq!(shared[0].key(), "p/dev.tfstate");
+        // Same-named slots are validate_unique's other error, and keyless slots have no remote state to compare.
+        assert_eq!(find_shared_state(&[slots[0].clone(), slots[0].clone()]), []);
+        let keyless = Project::new("");
+        keyless.tfvars("x", DEMO);
+        keyless.tfvars("y", DEMO);
+        assert_eq!(find_shared_state(&list_slots(&keyless.config())), []);
     }
 
     #[test]

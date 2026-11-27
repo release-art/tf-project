@@ -21,7 +21,7 @@ use sha2::{Digest, Sha256};
 
 use crate::config::Config;
 use crate::models::Banner;
-use crate::{Ctx, Error, Result, hex, io_error, say};
+use crate::{Ctx, Error, Result, hex, io_error};
 
 /// A tfvars file ready to hand to Terraform. A decrypted copy is shredded when this is dropped.
 #[derive(Debug)]
@@ -124,13 +124,6 @@ fn references(text: &str) -> Vec<Reference<'_>> {
 /// # Errors
 /// `src` cannot be read, a reference's scheme has no source, or a source fails.
 pub fn materialize(config: &Config, ctx: &mut Ctx, src: &Path) -> Result<Decrypted> {
-    if config.legacy_secrets_command {
-        say!(
-            ctx.err,
-            "warning: [tf_project.secrets] command is no longer used: tfp resolves {{{{ scheme://… }}}} references \
-             itself. Delete it; if `op` isn't on PATH, set [tf_project.programs] op = \"<path>\" instead."
-        );
-    }
     let text = std::fs::read_to_string(src).map_err(io_error(src))?;
     let refs = references(&text);
     if refs.is_empty() {
@@ -234,7 +227,9 @@ fn one_password(uris: &[&str], dir: &Path, op: &str, search_path: Option<OsStrin
         ))
     })?;
     if !status.success() {
-        return Err(Error::Msg(format!("`op inject` failed ({status})")));
+        return Err(Error::Msg(format!(
+            "`op inject` failed ({status}). Is the 1Password CLI signed in (`op signin`)?"
+        )));
     }
     let filled = std::fs::read_to_string(&output).map_err(io_error(&output));
     shred(&output);
@@ -436,7 +431,10 @@ mod tests {
         assert!(
             err("a = \"{{ vault://k }}\"\n").ends_with("no secret source for `vault://` references (known: op, az-kv)")
         );
-        assert!(err("a = \"{{ op://v/fail/x }}\"\n").ends_with("`op inject` failed (exit status: 1)"));
+        assert!(
+            err("a = \"{{ op://v/fail/x }}\"\n")
+                .ends_with("`op inject` failed (exit status: 1). Is the 1Password CLI signed in (`op signin`)?")
+        );
         assert!(err("a = \"{{ op://v/garble/x }}\"\n").ends_with("`op inject` returned something unexpected"));
         // `op` that writes no output at all.
         p.write("bin/op", "#!/bin/sh\nexit 0\n");
@@ -462,33 +460,15 @@ mod tests {
     }
 
     #[test]
-    fn the_old_secrets_command_is_ignored_with_a_warning() {
-        let p = with_fake_op(
-            "[tf_project.secrets]\ncommand = [\"op\", \"inject\", \"--in-file\", \"{in}\", \"--out-file\", \"{out}\"]",
-        );
-        let (text, err) = decrypt(&p, "a = \"{{ op://v/i/f }}\"\n");
-        assert_eq!(text.unwrap(), "a = \"secret(v/i/f)\"\n");
-        assert!(
-            err.starts_with("warning: [tf_project.secrets] command is no longer used"),
-            "{err}"
-        );
-    }
-
-    #[test]
     fn a_configured_op_path_is_used() {
         // The fake `op` is in the project's bin/, not on PATH: only the configured path finds it.
-        for setting in [
-            "[tf_project.programs]\nop = \"bin/op\"",
-            "[tf_project.secrets]\ncommand = [\"bin/op\", \"inject\"]",
-        ] {
-            let p = with_fake_op(setting);
-            let src = p.write("tfvars/dev.tfvars", "a = \"{{ op://v/i/f }}\"\n");
-            let mut s = Streams::default();
-            let mut ctx = s.ctx(&p.root);
-            // tfp's own PATH, which lacks the project's bin/.
-            ctx.search_path = None;
-            let d = materialize(&p.config(), &mut ctx, &src).unwrap();
-            assert_eq!(d.contents(), b"a = \"secret(v/i/f)\"\n", "{setting}");
-        }
+        let p = with_fake_op("[tf_project.programs]\nop = \"bin/op\"");
+        let src = p.write("tfvars/dev.tfvars", "a = \"{{ op://v/i/f }}\"\n");
+        let mut s = Streams::default();
+        let mut ctx = s.ctx(&p.root);
+        // tfp's own PATH, which lacks the project's bin/.
+        ctx.search_path = None;
+        let d = materialize(&p.config(), &mut ctx, &src).unwrap();
+        assert_eq!(d.contents(), b"a = \"secret(v/i/f)\"\n");
     }
 }

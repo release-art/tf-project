@@ -35,8 +35,6 @@ pub struct Config {
     pub backend_config: BTreeMap<String, String>,
     /// The other programs tfp runs.
     pub programs: Programs,
-    /// Whether the config still has the old `[tf_project.secrets] command`, which is no longer used.
-    pub legacy_secrets_command: bool,
     /// `TF_PLUGIN_CACHE_DIR`; none when disabled with `plugin_cache_dir = ""`.
     pub plugin_cache_dir: Option<PathBuf>,
     /// `GOOS_GOARCH` platforms locked on top of the defaults.
@@ -61,20 +59,12 @@ struct Table {
     #[serde(default)]
     backend_config: BTreeMap<String, String>,
     #[serde(default)]
-    secrets: Secrets,
-    #[serde(default)]
     programs: ProgramsTable,
     plugin_cache_dir: Option<PathBuf>,
     #[serde(default)]
     extra_lock_platforms: Vec<String>,
     #[serde(default = "default_retention")]
     snapshot_retention: u32,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Secrets {
-    command: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -203,10 +193,8 @@ impl Config {
     pub fn discover(start: &Path) -> Result<Self> {
         let Some(Located { file, table }) = locate(start)? else {
             return Err(Error::Config(format!(
-                "Could not find {CONFIG_FILE_NAME} or [tool.tf_project] in pyproject.toml by walking up from {}.\n\n\
-                 Create a {CONFIG_FILE_NAME} at your project root, e.g.:\n\n  \
-                 [tf_project]\n  terraform_dir = \"terraform\"\n  tfvars_dir = \"tfvars\"\n  tmp_dir = \"tmp\"\n  \
-                 state_key_prefix = \"terraform/azure/\"\n",
+                "No {CONFIG_FILE_NAME} (or [tool.tf_project] in pyproject.toml) in {} or above. \
+                 Run `tfp self init` at your project root to create one.",
                 resolve(start).display()
             )));
         };
@@ -248,20 +236,8 @@ impl Config {
             || default_terraform(std::env::var_os("PATH"), &root),
             &root,
         )?;
-        // The old secrets command may name a custom `op`: keep using it until `programs.op` is set.
-        let legacy_op = raw
-            .secrets
-            .command
-            .as_ref()
-            .and_then(|c| c.first())
-            .filter(|p| p.as_str() != "op" && Path::new(p).file_stem().is_some_and(|s| s == "op"));
         let programs = Programs {
-            op: program(
-                "programs.op",
-                raw.programs.op.or(legacy_op.cloned()),
-                || "op".into(),
-                &root,
-            )?,
+            op: program("programs.op", raw.programs.op, || "op".into(), &root)?,
             az: program("programs.az", raw.programs.az, || "az".into(), &root)?,
             aws: program("programs.aws", raw.programs.aws, || "aws".into(), &root)?,
         };
@@ -274,7 +250,6 @@ impl Config {
             terraform_binary,
             backend_config: raw.backend_config,
             programs,
-            legacy_secrets_command: raw.secrets.command.is_some(),
             plugin_cache_dir,
             extra_lock_platforms: raw.extra_lock_platforms,
             snapshot_retention: raw.snapshot_retention,
@@ -395,7 +370,7 @@ mod tests {
         assert_eq!(c.plugin_cache_dir, Some(p.path("tmp/plugin-cache")));
         assert_eq!(c.snapshot_retention, 200);
         let programs = (c.programs.op.as_str(), c.programs.az.as_str(), c.programs.aws.as_str());
-        assert_eq!((programs, c.legacy_secrets_command), (("op", "az", "aws"), false));
+        assert_eq!(programs, ("op", "az", "aws"));
         assert_eq!(c.terraform_binary, p.path("bin/terraform").display().to_string());
         assert_eq!(c.slot_dir("dev"), p.path("tmp/slots/dev"));
         for (path, rel) in [
@@ -436,20 +411,8 @@ mod tests {
         assert_eq!(c.snapshot_retention, 0);
         assert_eq!(c.backend_config["a"], "b");
         assert_eq!(c.state_key_prefix, "p/");
-        let disabled = load("[tf_project]\nplugin_cache_dir = \"\"\n[tf_project.secrets]\n").unwrap();
+        let disabled = load("[tf_project]\nplugin_cache_dir = \"\"\n").unwrap();
         assert_eq!(disabled.plugin_cache_dir, None);
-        assert!(!disabled.legacy_secrets_command);
-        // The old secrets command is flagged, and lends its `op` path until `programs.op` is set.
-        let legacy =
-            |command: &str| load(&format!("[tf_project]\n[tf_project.secrets]\ncommand = {command}\n")).unwrap();
-        let old = legacy(r#"["/opt/op", "inject"]"#);
-        assert_eq!(
-            (old.legacy_secrets_command, old.programs.op.as_str()),
-            (true, "/opt/op")
-        );
-        assert_eq!(legacy(r#"["op", "inject"]"#).programs.op, "op");
-        assert_eq!(legacy(r#"["sops", "-d"]"#).programs.op, "op");
-        assert_eq!(legacy("[]").programs.op, "op");
     }
 
     #[test]
@@ -512,7 +475,7 @@ mod tests {
         assert_eq!(Config::discover(&sub).unwrap().tmp_dir, root.join("a/t"));
         // A pyproject without the table is skipped; a missing one everywhere is an error.
         std::fs::write(root.join("a/pyproject.toml"), "[tool]\ntf_project = 1\n").unwrap();
-        assert!(matches!(Config::discover(&sub), Err(Error::Config(m)) if m.starts_with("Could not find")));
+        assert!(matches!(Config::discover(&sub), Err(Error::Config(m)) if m.starts_with("No tf_project.toml")));
         // tf_project.toml anywhere up the tree wins over a nearer pyproject.
         std::fs::write(root.join("tf_project.toml"), "[tf_project]\n").unwrap();
         assert_eq!(locate(&sub).unwrap().unwrap().file, root.join("tf_project.toml"));

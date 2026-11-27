@@ -4,7 +4,7 @@ version = "0.0.0"
 edition = "2024"
 rust-version = "1.100"
 license = "MIT"
-description = "Terraform / OpenTofu wrapper with named per-tfvars slots, cached `.terraform/`, 1Password secret injection, and apply-safety guards."
+description = "Terraform / OpenTofu wrapper with named per-tfvars slots, cached `.terraform/`, secrets from 1Password or Azure Key Vault, and apply-safety guards."
 repository = "https://github.com/release-art/tf-project"
 publish = false
 

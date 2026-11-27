@@ -44,13 +44,16 @@ When `tfp plan`, `apply`, `refresh`, `destroy` or `import` needs the tfvars:
 
 A tfvars file without references is used as it is.
 
+Terraform still writes the values into the saved plan and the state, so
+`tmp_dir` holds them in plain text. tfp makes it readable by you alone (macOS,
+Linux), and `tfp self doctor` fails if git doesn't ignore it.
+
 Values are inserted exactly as stored. A secret containing a newline is fine
 in a heredoc, but inside an ordinary `"…"` string a newline, `"` or `\` would
 break the HCL.
 
-`tfp self doctor` lists the schemes your tfvars use and checks that each
-one's tool is installed. A reference with a scheme tfp doesn't know stops the
-command with an error naming the file and the scheme.
+A reference with an unknown scheme is an error. `tfp self doctor` checks the
+tool for each scheme your tfvars use.
 
 ## 1Password (`op://`)
 
@@ -119,22 +122,6 @@ If `az` isn't signed in, the error includes its own advice (usually "run
 
 ## Tools that aren't on `PATH`
 
-tfp runs `op` and `az` from `PATH`. If yours live elsewhere, say where in
-`tf_project.toml`:
-
-```toml
-[tf_project.programs]
-op = "/opt/1password/op"
-az = "/opt/azure-cli/bin/az"
-```
-
-`tfp self doctor` checks the programs you've set. For Key Vault, tfp puts the
-`az` program's directory first on `PATH` while signing in, so the file has to
-be called `az` (`az.cmd` on Windows), as it is after a normal install.
-
-## Older configs: `[tf_project.secrets] command`
-
-Before tfp resolved references itself, it ran a command over the whole file,
-by default `op inject`. That setting is no longer used: tfp warns that you can
-delete it. If its first word was a path to your `op`, tfp keeps using that
-path until you set `[tf_project.programs] op`.
+Set `[tf_project.programs] op` / `az` in `tf_project.toml` (see
+[Configuration](configuration.md)). For Key Vault the program must be called
+`az` (`az.cmd` on Windows), as after a normal install.

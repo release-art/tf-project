@@ -73,26 +73,32 @@ fn strs(items: &[&str]) -> Vec<String> {
     items.iter().map(|s| (*s).to_owned()).collect()
 }
 
+/// Whether `backend_config` is for the azurerm backend.
+#[must_use]
+pub fn is_azurerm(backend_config: &std::collections::BTreeMap<String, String>) -> bool {
+    backend_config.contains_key("storage_account_name") && backend_config.contains_key("container_name")
+}
+
 /// The provider for the slot's backend.
 ///
 /// # Errors
 /// The saved backend configuration is not azurerm, nor S3 with a DynamoDB table.
 pub fn select_provider(state: &MyState) -> Result<LockProvider> {
     let bc = &state.backend_config;
-    let (backend, program) = if bc.contains_key("storage_account_name") && bc.contains_key("container_name") {
+    let (backend, program) = if is_azurerm(bc) {
         (Backend::Azure, "az")
     } else if bc.contains_key("dynamodb_table") && bc.contains_key("bucket") {
         (Backend::S3, "aws")
     } else if bc.contains_key("bucket") {
         return Err(Error::Msg(
-            "S3 backend without `dynamodb_table` - terraform stores no lock for this backend; \
-             tfp self lock not applicable."
+            "`tfp self lock` handles S3 locks in DynamoDB only, and this backend has no `dynamodb_table`. \
+             For an S3 lock file, use `tfp tf force-unlock <lock id>`."
                 .into(),
         ));
     } else {
         return Err(Error::Msg(format!(
-            "Unrecognised backend in saved state. `tfp self lock` supports azurerm and s3 (with `dynamodb_table`); \
-             detected backend_config keys: {:?}.",
+            "`tfp self lock` handles azurerm and s3 (with `dynamodb_table`) backends; this slot's backend settings \
+             ({:?}) are neither. Use `tfp tf force-unlock <lock id>`.",
             bc.keys().collect::<Vec<_>>()
         )));
     };
@@ -392,8 +398,8 @@ mod tests {
     #[test]
     fn unsupported_and_incomplete_backends() {
         let err = |b: &[(&str, &str)]| select_provider(&state(b, &[])).unwrap_err().to_string();
-        assert!(err(&[("bucket", "b")]).starts_with("S3 backend without `dynamodb_table`"));
-        assert!(err(&[("path", "x")]).ends_with("detected backend_config keys: [\"path\"]."));
+        assert!(err(&[("bucket", "b")]).starts_with("`tfp self lock` handles S3 locks in DynamoDB only"));
+        assert!(err(&[("path", "x")]).contains("([\"path\"]) are neither"));
         let azure = select_provider(&state(&[("storage_account_name", "a"), ("container_name", "")], &[])).unwrap();
         assert_eq!(
             azure.status().unwrap_err().to_string(),

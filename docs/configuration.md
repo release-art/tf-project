@@ -29,7 +29,7 @@ state_key_prefix = "terraform/azure/"   # see "Backend settings" below
 | --- | --- | --- |
 | `terraform_dir` | `terraform` | Where the Terraform projects are, one subdirectory each. |
 | `tfvars_dir` | `tfvars` | Where the tfvars files are. Subdirectories are searched too. |
-| `tmp_dir` | `tmp` | Slot directories, saved plans, snapshots and the provider cache. |
+| `tmp_dir` | `tmp` | Slot directories, saved plans, snapshots and the provider cache. Holds secret values: keep it out of git. |
 | `state_key_prefix` | none | Prefix for a backend `key` made from the tfvars file name. |
 | `terraform_binary` | `terraform` on `PATH` | The program to run: a name (`tofu`) looked up on `PATH`, or a path. |
 | `backend_config` | none | A table of `-backend-config` values for every slot. |
@@ -51,8 +51,8 @@ az = "C:/Program Files/Microsoft SDKs/Azure/CLI2/wbin/az.cmd"
 
 A misspelt or unknown setting is an error, so typos don't go unnoticed.
 
-The provider cache, lock-file platforms and snapshots are explained in
-[Safety and recovery](safety.md).
+Snapshots are explained in [Safety and recovery](safety.md), the provider
+cache and lock-file platforms [below](#provider-cache-and-lock-file).
 
 ## The banner
 
@@ -73,10 +73,14 @@ instance_count = 2
 | `backend_config` | no | More `-backend-config` values for this environment. |
 | `env` | no | Environment variables for Terraform, e.g. `ARM_SUBSCRIPTION_ID`. |
 | `secrets_config` | no | Settings for secret sources; see [Secrets](secrets.md). |
+| `protected` | no | `true` makes commands that change this slot ask for its name first; see [Safety and recovery](safety.md#protected-slots). |
 
 Unknown fields don't stop anything, so older and newer versions of tfp can
 share files. `tfp self banner check <file>` lists any it doesn't recognise,
 and shows what the banner resolves to.
+
+A `*.tfvars` file without a valid banner defines no slot; `tfp use`,
+`tfp init`, `tfp ls` and `tfp self doctor` point it out.
 
 ### Slot names
 
@@ -104,6 +108,12 @@ drops the leading `/` before passing it on, because the azurerm backend adds
 the container name in front. Use `state_key` when two tfvars files should
 share one state, or when the default key doesn't fit.
 
+Two slots with the same backend settings share one remote state. If that
+comes from the default key (`tfvars/eu/dev.tfvars` and `tfvars/us/dev.tfvars`
+both become `<state_key_prefix>dev.tfstate`), `tfp use` refuses: give one a
+`state_key`. If both banners set the same `state_key`, sharing is deliberate
+and allowed.
+
 After editing a banner's `state_key` or `backend_config`, run `tfp init` to
 re-bind the slot to the new backend.
 
@@ -126,3 +136,18 @@ tmp/
 
 `tfp ls` and `tfp self doctor` point out slot directories that no tfvars file
 claims any more; `tfp rm <slot>` removes one.
+
+## Provider cache and lock file
+
+All slots share one provider cache (`tmp_dir/plugin-cache`), so a provider is
+downloaded once and a new slot initialises in seconds. `plugin_cache_dir = ""`
+turns it off.
+
+With a cache, Terraform may record lock-file checksums for your platform only,
+which then fail on CI or a colleague's machine. So after each `terraform init`
+tfp runs `terraform providers lock` for Linux amd64 and arm64 plus your own
+platform. Add others with `extra_lock_platforms`, or refresh by hand:
+
+```sh
+tfp self providers lock -p linux_amd64 -p windows_amd64
+```

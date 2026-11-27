@@ -125,6 +125,3 @@ If `az` isn't signed in, the error includes its own advice (usually "run
 Set `[tf_project.programs] op` / `az` in `tf_project.toml` (see
 [Configuration](configuration.md)). For Key Vault the program must be called
 `az` (`az.cmd` on Windows), as after a normal install.
-
-The old `[tf_project.secrets] command` setting is no longer used; tfp warns
-that you can delete it.

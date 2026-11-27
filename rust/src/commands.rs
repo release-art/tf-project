@@ -806,20 +806,6 @@ pub fn do_fmt(config: &Config, ctx: &mut Ctx, extra: &[String]) -> Result<()> {
     terraform::run(ctx, &cmd, &terraform::Env::new())
 }
 
-/// `tfp output`.
-///
-/// # Errors
-/// No usable active slot, or Terraform fails.
-pub fn do_output(config: &Config, ctx: &mut Ctx, extra: &[String]) -> Result<()> {
-    let ActiveState { state, .. } = resolve_active_slot(config, ctx)?;
-    check_data_dir(config, &state.slot)?;
-    terraform::run(
-        ctx,
-        &build_output_argv(config, &state, extra),
-        &env_for_slot(config, &state),
-    )
-}
-
 /// `tfp import`, after snapshotting the remote state.
 ///
 /// # Errors
@@ -1330,7 +1316,7 @@ pub(crate) mod tests {
         };
         do_targeted(&c, &mut ctx, "apply", &flags).unwrap();
         do_targeted(&c, &mut ctx, "destroy", &Flags::default()).unwrap();
-        do_output(&c, &mut ctx, &strings(&["x"])).unwrap();
+        do_tf(&c, &mut ctx, &strings(&["output", "-json", "x"])).unwrap();
         do_fmt(&c, &mut ctx, &strings(&["-check"])).unwrap();
         do_import(&c, &mut ctx, "a.b", "id-1", &[]).unwrap();
         do_state(&c, &mut ctx, "list", &strings(&["a"]), &strings(&["-x"])).unwrap();
@@ -1408,7 +1394,9 @@ pub(crate) mod tests {
         let mut s = Streams::default();
         let mut ctx = s.ctx(&p.root);
         ctx.slot_flag = Some("x.tfvars".into());
-        assert!(matches!(do_output(&c, &mut ctx, &[]), Err(Error::Msg(m)) if m.starts_with("No banner in")));
+        assert!(
+            matches!(do_state(&c, &mut ctx, "list", &[], &[]), Err(Error::Msg(m)) if m.starts_with("No banner in"))
+        );
     }
 
     #[test]
@@ -1533,7 +1521,6 @@ pub(crate) mod tests {
         assert_eq!(p.terraform_calls().len(), 1, "only the plan ran");
         // Reading is unaffected.
         do_state(&c, &mut ctx, "list", &[], &[]).unwrap();
-        do_output(&c, &mut ctx, &[]).unwrap();
         // TFP_CONFIRM naming the slot lets them through.
         ctx.confirm_env = Some("dev".into());
         do_targeted(&c, &mut ctx, "destroy", &Flags::default()).unwrap();

@@ -35,8 +35,6 @@ pub struct Config {
     pub backend_config: BTreeMap<String, String>,
     /// The other programs tfp runs.
     pub programs: Programs,
-    /// Whether the config still has the old `[tf_project.secrets] command`, which is no longer used.
-    pub legacy_secrets_command: bool,
     /// `TF_PLUGIN_CACHE_DIR`; none when disabled with `plugin_cache_dir = ""`.
     pub plugin_cache_dir: Option<PathBuf>,
     /// `GOOS_GOARCH` platforms locked on top of the defaults.
@@ -61,20 +59,12 @@ struct Table {
     #[serde(default)]
     backend_config: BTreeMap<String, String>,
     #[serde(default)]
-    secrets: Secrets,
-    #[serde(default)]
     programs: ProgramsTable,
     plugin_cache_dir: Option<PathBuf>,
     #[serde(default)]
     extra_lock_platforms: Vec<String>,
     #[serde(default = "default_retention")]
     snapshot_retention: u32,
-}
-
-#[derive(Debug, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Secrets {
-    command: Option<Vec<String>>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -246,20 +236,8 @@ impl Config {
             || default_terraform(std::env::var_os("PATH"), &root),
             &root,
         )?;
-        // The old secrets command may name a custom `op`: keep using it until `programs.op` is set.
-        let legacy_op = raw
-            .secrets
-            .command
-            .as_ref()
-            .and_then(|c| c.first())
-            .filter(|p| p.as_str() != "op" && Path::new(p).file_stem().is_some_and(|s| s == "op"));
         let programs = Programs {
-            op: program(
-                "programs.op",
-                raw.programs.op.or(legacy_op.cloned()),
-                || "op".into(),
-                &root,
-            )?,
+            op: program("programs.op", raw.programs.op, || "op".into(), &root)?,
             az: program("programs.az", raw.programs.az, || "az".into(), &root)?,
             aws: program("programs.aws", raw.programs.aws, || "aws".into(), &root)?,
         };
@@ -272,7 +250,6 @@ impl Config {
             terraform_binary,
             backend_config: raw.backend_config,
             programs,
-            legacy_secrets_command: raw.secrets.command.is_some(),
             plugin_cache_dir,
             extra_lock_platforms: raw.extra_lock_platforms,
             snapshot_retention: raw.snapshot_retention,
@@ -393,7 +370,7 @@ mod tests {
         assert_eq!(c.plugin_cache_dir, Some(p.path("tmp/plugin-cache")));
         assert_eq!(c.snapshot_retention, 200);
         let programs = (c.programs.op.as_str(), c.programs.az.as_str(), c.programs.aws.as_str());
-        assert_eq!((programs, c.legacy_secrets_command), (("op", "az", "aws"), false));
+        assert_eq!(programs, ("op", "az", "aws"));
         assert_eq!(c.terraform_binary, p.path("bin/terraform").display().to_string());
         assert_eq!(c.slot_dir("dev"), p.path("tmp/slots/dev"));
         for (path, rel) in [
@@ -434,20 +411,8 @@ mod tests {
         assert_eq!(c.snapshot_retention, 0);
         assert_eq!(c.backend_config["a"], "b");
         assert_eq!(c.state_key_prefix, "p/");
-        let disabled = load("[tf_project]\nplugin_cache_dir = \"\"\n[tf_project.secrets]\n").unwrap();
+        let disabled = load("[tf_project]\nplugin_cache_dir = \"\"\n").unwrap();
         assert_eq!(disabled.plugin_cache_dir, None);
-        assert!(!disabled.legacy_secrets_command);
-        // The old secrets command is flagged, and lends its `op` path until `programs.op` is set.
-        let legacy =
-            |command: &str| load(&format!("[tf_project]\n[tf_project.secrets]\ncommand = {command}\n")).unwrap();
-        let old = legacy(r#"["/opt/op", "inject"]"#);
-        assert_eq!(
-            (old.legacy_secrets_command, old.programs.op.as_str()),
-            (true, "/opt/op")
-        );
-        assert_eq!(legacy(r#"["op", "inject"]"#).programs.op, "op");
-        assert_eq!(legacy(r#"["sops", "-d"]"#).programs.op, "op");
-        assert_eq!(legacy("[]").programs.op, "op");
     }
 
     #[test]

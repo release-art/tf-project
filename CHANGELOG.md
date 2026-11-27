@@ -49,6 +49,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and `tfp self lock break` name the slot when they ask. A missing config
   points at `tfp self init`.
 
+### Removed
+- `[tf_project.secrets] command`, unused since 0.3.1, is now an unknown
+  setting and an error: delete it, and set `[tf_project.programs] op` if your
+  `op` isn't on `PATH`.
+
 ## [0.3.3] - 2026-11-26
 
 ### Fixed

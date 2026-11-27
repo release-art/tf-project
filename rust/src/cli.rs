@@ -564,7 +564,10 @@ fn dispatch(config: &Config, ctx: &mut Ctx, command: Wrapped) -> Result<i32> {
             commands::do_targeted(config, ctx, "destroy", &flags(targets, vec![], extra))
         }
         Wrapped::Fmt(extra) => commands::do_fmt(config, ctx, &extra.extra),
-        Wrapped::Output(extra) => commands::do_output(config, ctx, &extra.extra),
+        Wrapped::Output(extra) => commands::require_active(config, ctx).and_then(|_| {
+            let args = [&["output".to_owned(), "-json".to_owned()], &extra.extra[..]].concat();
+            commands::do_tf(config, ctx, &args)
+        }),
         Wrapped::Import { address, id, extra } => commands::do_import(config, ctx, &address, &id, &extra.extra),
         Wrapped::State(state) => {
             let (sub, args, extra) = match state {
@@ -1542,11 +1545,7 @@ secret_sources:
                 text.starts_with(&format!("{existing}{}", &expected[existing.len()..])),
                 "{text:?}"
             );
-            assert!(
-                !crate::config::Config::discover(dir.path())
-                    .unwrap()
-                    .legacy_secrets_command
-            );
+            assert!(crate::config::Config::discover(dir.path()).is_ok());
             assert!(
                 tfp_in(dir.path(), &["self", "init"], "")
                     .2

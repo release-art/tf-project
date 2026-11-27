@@ -234,7 +234,9 @@ fn one_password(uris: &[&str], dir: &Path, op: &str, search_path: Option<OsStrin
         ))
     })?;
     if !status.success() {
-        return Err(Error::Msg(format!("`op inject` failed ({status})")));
+        return Err(Error::Msg(format!(
+            "`op inject` failed ({status}). Is the 1Password CLI signed in (`op signin`)?"
+        )));
     }
     let filled = std::fs::read_to_string(&output).map_err(io_error(&output));
     shred(&output);
@@ -436,7 +438,10 @@ mod tests {
         assert!(
             err("a = \"{{ vault://k }}\"\n").ends_with("no secret source for `vault://` references (known: op, az-kv)")
         );
-        assert!(err("a = \"{{ op://v/fail/x }}\"\n").ends_with("`op inject` failed (exit status: 1)"));
+        assert!(
+            err("a = \"{{ op://v/fail/x }}\"\n")
+                .ends_with("`op inject` failed (exit status: 1). Is the 1Password CLI signed in (`op signin`)?")
+        );
         assert!(err("a = \"{{ op://v/garble/x }}\"\n").ends_with("`op inject` returned something unexpected"));
         // `op` that writes no output at all.
         p.write("bin/op", "#!/bin/sh\nexit 0\n");

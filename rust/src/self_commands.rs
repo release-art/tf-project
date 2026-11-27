@@ -157,12 +157,8 @@ pub fn do_self_state_show(config: &Config, ctx: &Ctx, all: bool) -> Result<Value
         return Ok(Value::Object(out));
     }
     let name = require_active(config, ctx)?.name;
-    let state = load_state(config, &name)?.ok_or_else(|| {
-        Error::Msg(format!(
-            "No state for slot {name:?} at {}.",
-            config.state_file(&name).display()
-        ))
-    })?;
+    let state = load_state(config, &name)?
+        .ok_or_else(|| Error::Msg(format!("Slot {name:?} isn't initialised. Run `tfp use {name}` first.")))?;
     Ok(state.to_json())
 }
 
@@ -391,7 +387,7 @@ pub fn do_self_doctor(config: &Config, path: Option<&std::ffi::OsStr>) -> Vec<Do
             "orphan slots",
             false,
             format!(
-                "found orphan slot directories with no matching banner: {}",
+                "no banner defines {}; `tfp rm <slot>` removes a slot directory",
                 orphans.join(", ")
             ),
         )
@@ -444,7 +440,7 @@ pub fn do_self_trace(config: &Config, ctx: &Ctx, command: TraceCommand, flags: &
         return Ok(build_init_argv(config, &resolved, &flags.extra));
     }
     let state = load_state(config, &name)?
-        .ok_or_else(|| Error::Msg(format!("No state for slot {name:?}. Run `tfp use {name}` first.")))?;
+        .ok_or_else(|| Error::Msg(format!("Slot {name:?} isn't initialised. Run `tfp use {name}` first.")))?;
     let var_file = "<DECRYPTED_TFVARS>";
     Ok(match command {
         TraceCommand::Plan => build_plan_argv(config, &state, var_file, flags),
@@ -468,11 +464,11 @@ pub fn do_self_trace(config: &Config, ctx: &Ctx, command: TraceCommand, flags: &
 /// # Errors
 /// No active slot, or nothing recorded.
 pub fn do_last_invocation(config: &Config, ctx: &Ctx) -> Result<LastInvocation> {
-    let path = config.last_invocation(&require_active(config, ctx)?.name);
+    let slot = require_active(config, ctx)?.name;
+    let path = config.last_invocation(&slot);
     if !path.exists() {
         return Err(Error::Msg(format!(
-            "No prior invocation recorded at {}.",
-            path.display()
+            "No Terraform command has run in slot {slot:?} yet."
         )));
     }
     Ok(LastInvocation::load_file(&path)?)
@@ -621,8 +617,7 @@ pub fn do_self_snapshot_restore(config: &Config, ctx: &mut Ctx, name: Option<&st
     let Some(target) = target else {
         if entries.is_empty() {
             return Err(Error::Msg(format!(
-                "No snapshots to restore for slot {slot:?}. \
-                 Run `tfp self snapshot create` or perform a state-mutating op first."
+                "Slot {slot:?} has no snapshots to restore. `tfp self snapshot create` takes one."
             )));
         }
         let names: Vec<String> = entries.iter().map(|e| e.path.display().to_string()).collect();

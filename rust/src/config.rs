@@ -203,10 +203,8 @@ impl Config {
     pub fn discover(start: &Path) -> Result<Self> {
         let Some(Located { file, table }) = locate(start)? else {
             return Err(Error::Config(format!(
-                "Could not find {CONFIG_FILE_NAME} or [tool.tf_project] in pyproject.toml by walking up from {}.\n\n\
-                 Create a {CONFIG_FILE_NAME} at your project root, e.g.:\n\n  \
-                 [tf_project]\n  terraform_dir = \"terraform\"\n  tfvars_dir = \"tfvars\"\n  tmp_dir = \"tmp\"\n  \
-                 state_key_prefix = \"terraform/azure/\"\n",
+                "No {CONFIG_FILE_NAME} (or [tool.tf_project] in pyproject.toml) in {} or above. \
+                 Run `tfp self init` at your project root to create one.",
                 resolve(start).display()
             )));
         };
@@ -512,7 +510,7 @@ mod tests {
         assert_eq!(Config::discover(&sub).unwrap().tmp_dir, root.join("a/t"));
         // A pyproject without the table is skipped; a missing one everywhere is an error.
         std::fs::write(root.join("a/pyproject.toml"), "[tool]\ntf_project = 1\n").unwrap();
-        assert!(matches!(Config::discover(&sub), Err(Error::Config(m)) if m.starts_with("Could not find")));
+        assert!(matches!(Config::discover(&sub), Err(Error::Config(m)) if m.starts_with("No tf_project.toml")));
         // tf_project.toml anywhere up the tree wins over a nearer pyproject.
         std::fs::write(root.join("tf_project.toml"), "[tf_project]\n").unwrap();
         assert_eq!(locate(&sub).unwrap().unwrap().file, root.join("tf_project.toml"));

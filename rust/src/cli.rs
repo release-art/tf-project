@@ -617,7 +617,7 @@ fn ls(config: &Config, ctx: &mut Ctx, json: bool) -> Result<i32> {
     if listing.is_empty() {
         say!(ctx.out, "(no slots found in tfvars_dir)");
     } else {
-        let header = ["", "SLOT", "PROJECT", "TFVARS", "BACKEND KEY", "WARM SINCE"].map(str::to_owned);
+        let header = ["", "SLOT", "PROJECT", "TFVARS", "BACKEND KEY", "INITIALISED"].map(str::to_owned);
         let rows: Vec<[String; 6]> = std::iter::once(header)
             .chain(listing.into_iter().map(|s| {
                 let dash = |v: Option<String>| v.unwrap_or_else(|| "-".into());
@@ -689,7 +689,7 @@ fn drift(config: &Config, ctx: &mut Ctx, json: bool) -> i32 {
 
 fn status(config: &Config, ctx: &mut Ctx) -> Result<i32> {
     let Some(report) = commands::status_report(config, ctx)? else {
-        say!(ctx.err, "Not initialized. Run `tfp use <slot>` first.");
+        say!(ctx.err, "No active slot. Run `tfp use <slot>` first.");
         return Ok(1);
     };
     let state = &report.state;
@@ -815,9 +815,10 @@ fn snapshot(config: &Config, ctx: &mut Ctx, command: SnapshotCmd) -> Result<()> 
                 let which = name
                     .as_ref()
                     .map_or_else(|| "the newest snapshot".to_owned(), |n| format!("snapshot {n:?}"));
+                let slot = commands::require_active(config, ctx)?.name;
                 confirm(
                     ctx,
-                    &format!("Restore {which} to the remote backend? This will OVERWRITE the live tfstate."),
+                    &format!("Restore {which} of slot {slot:?}? It OVERWRITES the slot's remote state."),
                 )?;
             }
             let restored = sc::do_self_snapshot_restore(config, ctx, name.as_deref())?;
@@ -847,9 +848,10 @@ fn lock(config: &Config, ctx: &mut Ctx, command: LockCmd) -> Result<i32> {
         }
         LockCmd::Break { yes, blunt } => {
             if !yes {
+                let slot = commands::require_active(config, ctx)?.name;
                 confirm(
                     ctx,
-                    "Release the remote-state lock? Only do this if terraform is no longer running.",
+                    &format!("Release the state lock of slot {slot:?}? Only if no Terraform is still running on it."),
                 )?;
             }
             match sc::do_self_lock_break(config, ctx, blunt)? {
@@ -944,7 +946,10 @@ mod tests {
         assert!(code == 2 && err.contains("Usage:"));
         assert_eq!(tfp(&p, &["nope"]).0, 2);
         let (code, _, err) = tfp_in(std::path::Path::new("/"), &["status"], "");
-        assert!(code == 1 && err.starts_with("config error: Could not find"), "{err}");
+        assert!(
+            code == 1 && err.starts_with("config error: No tf_project.toml"),
+            "{err}"
+        );
     }
 
     #[test]
@@ -990,11 +995,7 @@ mod tests {
         let p = Project::new("");
         assert_eq!(
             tfp(&p, &["status"]),
-            (
-                1,
-                String::new(),
-                "Not initialized. Run `tfp use <slot>` first.\n".into()
-            )
+            (1, String::new(), "No active slot. Run `tfp use <slot>` first.\n".into())
         );
         assert_eq!(tfp(&p, &["ls"]).1, "(no slots found in tfvars_dir)\n");
         p.tfvars("a", DEMO);
@@ -1043,7 +1044,7 @@ mod tests {
         std::fs::write(p.path("tmp/slots/dev/tfplan"), "").unwrap();
         assert_eq!(tfp(&p, &["apply"]).0, 0);
         let (code, _, err) = tfp(&p, &["apply", "--force"]);
-        assert!(code == 1 && err.contains("no saved tfplan"));
+        assert!(code == 1 && err.contains("has no saved plan"));
     }
 
     #[test]
@@ -1119,7 +1120,7 @@ secret_sources:
             "No state file to remove.\n"
         );
         let (code, _, err) = tfp(&p, &["self", "state", "show"]);
-        assert!(code == 1 && err.starts_with("No state for slot \"dev\""));
+        assert!(code == 1 && err.starts_with("Slot \"dev\" isn't initialised"));
     }
 
     #[test]
@@ -1169,9 +1170,13 @@ secret_sources:
         assert_eq!(tfp(&p, &["self", "doctor"]).0, 1);
         assert_eq!(tfp(&p, &["-s", "dev", "self", "snapshot", "list"]).0, 1);
         let (code, _, err) = tfp(&p, &["-s", "dev", "self", "snapshot", "restore", "-y"]);
-        assert!(code == 1 && err.starts_with("No state for slot"), "{err}");
+        assert!(code == 1 && err.starts_with("Slot \"dev\" isn't initialised"), "{err}");
         let (code, _, err) = tfp_in(&p.root, &["self", "lock", "break"], "\n");
-        assert!(code == 1 && err.ends_with("Aborted!\n"));
+        assert!(code == 1 && err.starts_with("No active slot"), "{err}");
+        let (code, _, err) = tfp_in(&p.root, &["-s", "dev", "self", "lock", "break"], "\n");
+        assert!(code == 1 && err.ends_with("Aborted!\n"), "{err}");
+        let (code, _, err) = tfp_in(&p.root, &["self", "snapshot", "restore"], "\n");
+        assert!(code == 1 && err.starts_with("No active slot"), "{err}");
         assert_eq!(tfp(&p, &["self", "init"]).0, 1);
         let dir = tempfile::tempdir().unwrap();
         let (code, out, _) = tfp_in(dir.path(), &["self", "init"], "");
@@ -1185,7 +1190,7 @@ secret_sources:
         let (p, _c) = bound("");
         assert_eq!(tfp(&p, &["self", "snapshot", "list"]).1, "(no snapshots)\n");
         assert!(
-            fails(&p, &["self", "snapshot", "restore", "-y"]).starts_with("No snapshots to restore for slot \"dev\".")
+            fails(&p, &["self", "snapshot", "restore", "-y"]).starts_with("Slot \"dev\" has no snapshots to restore.")
         );
     }
 
@@ -1240,7 +1245,7 @@ secret_sources:
             "No state file to remove.\n"
         );
         assert!(fails(&p, &["-s", "ghost", "tf", "version"]).starts_with("no tfvars defines slot"));
-        assert!(fails(&p, &["-s", "dev", "self", "trace", "plan"]).starts_with("No state for slot \"dev\". Run"));
+        assert!(fails(&p, &["-s", "dev", "self", "trace", "plan"]).starts_with("Slot \"dev\" isn't initialised. Run"));
         assert!(fails(&p, &["use", "ghost"]).starts_with("no tfvars defines slot"));
     }
 
@@ -1282,7 +1287,10 @@ secret_sources:
             &["state", "list"],
             &["tf", "version"],
         ] {
-            assert!(fails(&p, args).contains("terraform data dir is missing"), "{args:?}");
+            assert!(
+                fails(&p, args).contains("has lost its .terraform directory"),
+                "{args:?}"
+            );
         }
     }
 
@@ -1511,7 +1519,7 @@ secret_sources:
         assert!(fails(&p, &["rm", "old"]).contains("old"));
         chmod(&p.path("tmp/slots/old/sub"), 0o755);
         let _held = crate::state::exclusive_lock(&c.apply_lock("dev")).unwrap();
-        assert!(fails(&p, &["refresh"]).starts_with("Lock held by another process"));
+        assert!(fails(&p, &["refresh"]).starts_with("Another tfp apply, refresh or destroy is already running"));
     }
 
     #[test]
@@ -1596,7 +1604,7 @@ secret_sources:
             "[FAIL] op:// references: 1Password CLI `no-such-op`",
             "[FAIL] terraform_dir exists",
             "[FAIL] slot uniqueness",
-            "found orphan slot directories with no matching banner: x, y",
+            "no banner defines x, y",
         ] {
             assert!(out.contains(line), "{line}\n{out}");
         }
@@ -1876,7 +1884,7 @@ secret_sources:
         for args in [&["self", "lock", "status"][..], &["self", "lock", "break", "-y"]] {
             let (code, _, err) = tfp_cloud(&p, args, "");
             assert!(
-                code == 1 && err.starts_with("Unrecognised backend in saved state."),
+                code == 1 && err.starts_with("`tfp self lock` handles azurerm and s3"),
                 "{err}"
             );
         }

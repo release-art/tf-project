@@ -19,7 +19,7 @@ stops and asks you to plan again. `tfp apply --force` skips the check. After a
 successful apply the saved plan is deleted, so it can't be applied twice.
 
 Only one `apply`, `refresh` or `destroy` runs per slot at a time; a second one
-stops with "Lock held by another process".
+stops, saying another one is already running.
 
 ## Protected slots
 

@@ -42,6 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and a missing `ARM_SUBSCRIPTION_ID` gets a warning naming the subscription
   Terraform will fall back to. `tfp self doctor` checks the same.
 
+### Changed
+- Clearer, shorter messages. Errors now say what to run next and drop
+  internal detail (plan hashes, state file paths). `tfp ls` shows an
+  `INITIALISED` column instead of `WARM SINCE`. `tfp self snapshot restore`
+  and `tfp self lock break` name the slot when they ask. A missing config
+  points at `tfp self init`.
+
 ## [0.3.3] - 2026-11-26
 
 ### Fixed

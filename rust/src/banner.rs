@@ -32,8 +32,7 @@ pub fn parse_banner(text: &str, tfvars: &Path) -> Result<Banner> {
         return banner.map_err(|e| banner_error(tfvars, &e.to_string()));
     }
     Err(Error::Msg(format!(
-        "Project info banner not found in {}. \
-         Expected a comment line like `# {{\"header\": \"terraform\", \"project\": \"<name>\"}}`.",
+        "No banner in {}. Add a comment line like `# {{\"header\": \"terraform\", \"project\": \"<name>\"}}`.",
         tfvars.display()
     )))
 }
@@ -187,12 +186,7 @@ mod tests {
     fn missing_and_malformed_banners() {
         let p = Project::new("");
         let none = p.write("tfvars/a.tfvars", "x = 1\n");
-        assert!(
-            find_banner(&none)
-                .unwrap_err()
-                .to_string()
-                .starts_with("Project info banner not found in ")
-        );
+        assert!(find_banner(&none).unwrap_err().to_string().starts_with("No banner in "));
         let bad = p.tfvars("b", r#"{"header":"terraform"}"#);
         let m = find_banner(&bad).unwrap_err().to_string();
         assert!(

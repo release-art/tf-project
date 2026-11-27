@@ -66,8 +66,7 @@ pub fn require_slot_state(config: &Config, slot: &str) -> Result<MyState> {
     }
     slots::assert_slot_exists(config, slot).map_err(|e| Error::Msg(e.to_string()))?;
     Err(Error::Msg(format!(
-        "No state for slot {slot:?} at {}. Run `tfp use {slot}` first.",
-        config.state_file(slot).display()
+        "Slot {slot:?} isn't initialised. Run `tfp use {slot}` first."
     )))
 }
 
@@ -281,8 +280,7 @@ fn check_data_dir(config: &Config, slot: &str) -> Result<()> {
         return Ok(());
     }
     Err(Error::Msg(format!(
-        "slot {slot:?}: terraform data dir is missing at {}. It was probably deleted. \
-         Run `tfp use {slot}` to reinitialize.",
+        "Slot {slot:?} has lost its .terraform directory ({}). Run `tfp use {slot}` to initialise it again.",
         data_dir.display()
     )))
 }
@@ -293,8 +291,7 @@ fn check_apply_plan(config: &Config, slot: &str) -> Result<()> {
     match (plan.exists(), meta.exists()) {
         (true, true) => Ok(()),
         (false, false) => Err(Error::Msg(format!(
-            "slot {slot:?}: no saved tfplan at {}. Run `tfp plan` first.",
-            plan.display()
+            "Slot {slot:?} has no saved plan. Run `tfp plan` first."
         ))),
         (has_plan, _) => {
             let (present, missing) = if has_plan {
@@ -303,8 +300,8 @@ fn check_apply_plan(config: &Config, slot: &str) -> Result<()> {
                 ("tfplan.meta.json", "tfplan")
             };
             Err(Error::Msg(format!(
-                "slot {slot:?}: saved plan is half-deleted ({present} present, {missing} missing). \
-                 Re-run `tfp plan` to regenerate both."
+                "Slot {slot:?} has an incomplete saved plan ({missing} is missing, {present} isn't). \
+                 Run `tfp plan` again."
             )))
         }
     }
@@ -374,11 +371,9 @@ fn check_tfplan_fresh(config: &Config, ctx: &mut Ctx, active: &ActiveState, decr
     let actual = plan_inputs_sha256(&config.terraform_dir, decrypted)?;
     if meta.inputs_sha256 != actual {
         return Err(Error::Msg(format!(
-            "Saved tfplan at {} was generated against different inputs (sha256 {}…) than the current tfvars + .tf \
-             source (sha256 {}…). Re-run `tfp plan` or use `tfp apply --force`.",
-            config.tfplan_file(&state.slot).display(),
-            meta.inputs_sha256.get(..12).unwrap_or(&meta.inputs_sha256),
-            actual.get(..12).unwrap_or(&actual),
+            "The saved plan for slot {:?} is out of date: the tfvars or Terraform files changed since `tfp plan`. \
+             Run `tfp plan` again, or `tfp apply --force` to apply it anyway.",
+            state.slot
         )));
     }
     // Without the banner, `resolved` comes from the same saved state the plan was made from: comparing would prove
@@ -386,8 +381,7 @@ fn check_tfplan_fresh(config: &Config, ctx: &mut Ctx, active: &ActiveState, decr
     if !*banner_present {
         say!(
             ctx.err,
-            "warning: tfvars banner for slot {:?} is missing; skipping banner-drift check on apply. \
-             Re-run `tfp use` once the banner is back to revalidate.",
+            "warning: slot {:?} has lost its tfvars banner, so the saved plan can't be checked against it.",
             state.slot
         );
         return Ok(());
@@ -410,8 +404,8 @@ fn check_tfplan_fresh(config: &Config, ctx: &mut Ctx, active: &ActiveState, decr
         return Ok(());
     }
     Err(Error::Msg(format!(
-        "Saved tfplan for slot {:?} no longer matches the current banner: {}. \
-         Re-run `tfp plan` or use `tfp apply --force`.",
+        "The saved plan for slot {:?} was made with a different banner: {}. \
+         Run `tfp plan` again, or `tfp apply --force` to apply it anyway.",
         state.slot,
         drift.join("; ")
     )))
@@ -606,9 +600,8 @@ pub fn do_use(config: &Config, ctx: &mut Ctx, arg: &str, extra: &[String]) -> Re
     write_active(config, &resolved.name)?;
     say!(
         ctx.err,
-        "active slot → {} (file: {}; affects all shells without TFP_SLOT set)",
-        resolved.name,
-        config.active_file().display()
+        "active slot → {} (for every shell without TFP_SLOT)",
+        resolved.name
     );
     Ok(resolved)
 }
@@ -681,7 +674,8 @@ fn bind_slot(
             } else {
                 say!(
                     ctx.err,
-                    "init failed; slot {:?} retains its previous saved state - fix the cause and re-run `tfp use`.",
+                    "init failed; slot {:?} keeps its previous settings. Fix the cause and run `tfp use {}` again.",
+                    resolved.name,
                     resolved.name
                 );
             }
@@ -1130,10 +1124,9 @@ pub(crate) mod tests {
             s.out(),
             "==== PROJECT: demo (slot \"dev\", first init (no .terraform/)) ====\n"
         );
-        assert!(
-            s.err()
-                .starts_with("resolved tfvars/dev.tfvars → slot \"dev\"\nactive slot → dev (file: ")
-        );
+        assert!(s.err().starts_with(
+            "resolved tfvars/dev.tfvars → slot \"dev\"\nactive slot → dev (for every shell without TFP_SLOT)\n"
+        ));
         assert_eq!(crate::state::read_active(&c).unwrap().as_deref(), Some("dev"));
         assert_eq!(
             load_state(&c, "dev").unwrap().unwrap().backend_config["key"],
@@ -1177,7 +1170,7 @@ pub(crate) mod tests {
         p.write("bin/fail", "");
         let mut s = Streams::default();
         assert_eq!(do_init(&c, &mut s.ctx(&p.root), &[]), Err(Error::Exit(1)));
-        assert!(s.err().contains("retains its previous saved state"));
+        assert!(s.err().contains("keeps its previous settings"));
         assert!(c.state_file("dev").exists());
         p.tfvars("qa", r#"{"header":"terraform","project":"demo"}"#);
         assert_eq!(
@@ -1250,7 +1243,7 @@ pub(crate) mod tests {
     fn apply_refuses_stale_plans() {
         let (p, c) = planned();
         p.write("terraform/demo/main.tf", "changed\n");
-        assert!(apply_error(&p, &c, false).starts_with("Saved tfplan at "));
+        assert!(apply_error(&p, &c, false).starts_with("The saved plan for slot \"dev\" is out of date"));
         do_apply(&c, &mut Streams::default().ctx(&p.root), true, &[]).unwrap();
 
         // A shared module stales the plan; a stray `.terraform/` and other files don't.
@@ -1272,7 +1265,7 @@ pub(crate) mod tests {
         ] {
             let (p, c) = planned();
             p.write(module, "{}\n");
-            assert!(apply_error(&p, &c, false).starts_with("Saved tfplan at "));
+            assert!(apply_error(&p, &c, false).starts_with("The saved plan for slot \"dev\" is out of date"));
         }
 
         let (p, c) = planned();
@@ -1286,9 +1279,9 @@ pub(crate) mod tests {
         meta.dump_file(&c.tfplan_meta("dev")).unwrap();
         assert_eq!(
             apply_error(&p, &c, false),
-            "Saved tfplan for slot \"dev\" no longer matches the current banner: project \"old\" → \"demo\"; \
+            "The saved plan for slot \"dev\" was made with a different banner: project \"old\" → \"demo\"; \
              state_key Some(\"demo/dev.tfstate\") → Some(\"x.tfstate\"); backend_config changed; banner env changed. \
-             Re-run `tfp plan` or use `tfp apply --force`."
+             Run `tfp plan` again, or `tfp apply --force` to apply it anyway."
         );
     }
 
@@ -1307,10 +1300,7 @@ pub(crate) mod tests {
         resync_meta(&p, &c);
         let mut s = Streams::default();
         do_apply(&c, &mut s.ctx(&p.root), false, &[]).unwrap();
-        assert!(
-            s.err()
-                .starts_with("warning: tfvars banner for slot \"dev\" is missing")
-        );
+        assert!(s.err().starts_with("warning: slot \"dev\" has lost its tfvars banner"));
     }
 
     #[test]
@@ -1318,15 +1308,15 @@ pub(crate) mod tests {
         let (p, c) = bound("");
         assert!(apply_error(&p, &c, false).ends_with("Run `tfp plan` first."));
         std::fs::write(c.tfplan_file("dev"), "").unwrap();
-        assert!(apply_error(&p, &c, false).contains("(tfplan present, tfplan.meta.json missing)"));
+        assert!(apply_error(&p, &c, false).contains("(tfplan.meta.json is missing, tfplan isn't)"));
         std::fs::remove_file(c.tfplan_file("dev")).unwrap();
         std::fs::write(c.tfplan_meta("dev"), "").unwrap();
-        assert!(apply_error(&p, &c, false).contains("(tfplan.meta.json present, tfplan missing)"));
+        assert!(apply_error(&p, &c, false).contains("(tfplan is missing, tfplan.meta.json isn't)"));
         std::fs::write(c.tfplan_file("dev"), "").unwrap();
         let _held = crate::state::exclusive_lock(&c.apply_lock("dev")).unwrap();
-        assert!(apply_error(&p, &c, false).starts_with("Lock held by another process"));
+        assert!(apply_error(&p, &c, false).starts_with("Another tfp apply, refresh or destroy is already running"));
         std::fs::remove_dir_all(c.data_dir("dev")).unwrap();
-        assert!(apply_error(&p, &c, false).contains("terraform data dir is missing"));
+        assert!(apply_error(&p, &c, false).contains("has lost its .terraform directory"));
     }
 
     #[test]
@@ -1391,7 +1381,7 @@ pub(crate) mod tests {
             do_tf(&c, &mut ctx, &[])
                 .unwrap_err()
                 .to_string()
-                .starts_with("No state for slot \"dev\"")
+                .starts_with("Slot \"dev\" isn't initialised")
         );
     }
 
@@ -1418,9 +1408,7 @@ pub(crate) mod tests {
         let mut s = Streams::default();
         let mut ctx = s.ctx(&p.root);
         ctx.slot_flag = Some("x.tfvars".into());
-        assert!(
-            matches!(do_output(&c, &mut ctx, &[]), Err(Error::Msg(m)) if m.starts_with("Project info banner not found"))
-        );
+        assert!(matches!(do_output(&c, &mut ctx, &[]), Err(Error::Msg(m)) if m.starts_with("No banner in")));
     }
 
     #[test]
@@ -1628,7 +1616,7 @@ pub(crate) mod tests {
         assert!(
             described[1]
                 .1
-                .starts_with("error: slot \"nodata\": terraform data dir is missing"),
+                .starts_with("error: Slot \"nodata\" has lost its .terraform directory"),
             "{described:?}"
         );
         assert_eq!(described[2], ("prod".into(), "skipped: protected".into()));

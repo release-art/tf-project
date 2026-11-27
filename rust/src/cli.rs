@@ -60,7 +60,7 @@ struct Targets {
 #[derive(Debug, Subcommand)]
 enum Wrapped {
     /// Switch to a slot: a slot name (banner `slot`, or tfvars stem) or a tfvars path. Runs `terraform init` only
-    /// when the slot is cold or its backend changed.
+    /// when the slot was never initialised or its backend changed.
     Use {
         /// Slot name or tfvars path.
         target: String,
